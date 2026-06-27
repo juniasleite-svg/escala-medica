@@ -44,6 +44,25 @@ C = {
 
 DIAS_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
 
+def _normalizar_data(data_str, ano="2026"):
+    """Normaliza data para formato DD/MM/YYYY."""
+    if not data_str: return ""
+    s = str(data_str).strip()
+    # Já está completo
+    if len(s) == 10 and "/" in s: return s  # DD/MM/YYYY
+    if len(s) == 10 and "-" in s:  # YYYY-MM-DD
+        parts = s.split("-")
+        return f"{parts[2]}/{parts[1]}/{parts[0]}"
+    # DD/MM — adicionar ano
+    if len(s) == 5 and "/" in s:
+        return f"{s}/{ano}"
+    if len(s) == 5 and "-" in s:
+        parts = s.split("-")
+        return f"{parts[1]}/{parts[0]}/{ano}"
+    return s
+
+
+
 def _cor(rgb):
     return PatternFill("solid", fgColor=rgb)
 
@@ -118,30 +137,33 @@ def gerar_excel_completo(dados, config):
     
     semanas = _gerar_datas(data_inicio, num_semanas)
     
+    # Detectar ano da escala
+    ano_escala = "2026"
+    try:
+        ano_escala = date.fromisoformat(data_inicio).strftime("%Y")
+    except: pass
+
     # Montar índice de escala detalhada por aluno/data
     escala_det = dados.get("escala_detalhada", [])
-    # {nome: {data_str: "turno_compacto"}}
+    # {nome: {data_normalizada: "turno_compacto"}}
     escala_por_aluno = {}
     for entry in escala_det:
         alunos = entry.get("alunos", [])
         if isinstance(entry.get("nome"), str) and entry.get("nome"):
             alunos = [entry["nome"]]
-        data_str = str(entry.get("data",""))
+        data_raw = str(entry.get("data",""))
+        data_str = _normalizar_data(data_raw, ano_escala)
         turno = entry.get("turno","")
         local = entry.get("local","")
-        horas = entry.get("horas","")
-        # Formato compacto: Local(Turno)
         abrev = _abrev_local(local, locais_cfg)
         codigo = _codigo_turno(turno, local, locais_cfg)
         valor = f"{abrev}({codigo})" if codigo else f"{abrev}"
         for nome in alunos:
             if nome not in escala_por_aluno:
                 escala_por_aluno[nome] = {}
-            # Se já tem entrada nesta data, combinar turnos
             if data_str in escala_por_aluno[nome]:
                 existing = escala_por_aluno[nome][data_str]
                 if valor not in existing:
-                    # Combinar: Enf(M) + Enf(T) → Enf(M+T)
                     escala_por_aluno[nome][data_str] = _combinar(existing, valor)
             else:
                 escala_por_aluno[nome][data_str] = valor
@@ -152,7 +174,7 @@ def gerar_excel_completo(dados, config):
     _aba_resumo_geral(wb, titulo, config, dados, semanas)
     _aba_alunos(wb, titulo, alunos_por_sg, config)
     _aba_calendario_rodizio(wb, titulo, dados.get("calendario_rodizio",[]), config, semanas)
-    _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg)
+    _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg, ano_escala)
     _aba_resumo_horas(wb, titulo, dados.get("resumo_horas",[]), config, semanas, locais_cfg)
     _aba_regras(wb, titulo, config, dados)
     _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, semanas, locais_cfg)
@@ -409,7 +431,7 @@ def _aba_calendario_rodizio(wb, titulo, calendario, config, semanas):
 
 
 # ── ABA 4: ESCALA NOMINAL DETALHADA ──────────────────────────────────────────
-def _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg):
+def _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg, ano_escala="2026"):
     ws = wb.create_sheet("Escala Nominal Detalhada")
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "E4"
@@ -457,6 +479,8 @@ def _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg):
         row = ws.max_row + 1
         local = entry.get("local","")
         turno = entry.get("turno","")
+        data_raw = str(entry.get("data",""))
+        data_norm = _normalizar_data(data_raw, ano_escala if 'ano_escala' in dir() else "2026")
         cor = _cor_local(local, locais_cfg)
 
         # Cor especial para FDS e cinderela
@@ -473,7 +497,7 @@ def _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg):
         if alunos and not nome_str:
             nome_str = " | ".join(alunos)
 
-        vals = [sem, entry.get("data",""), entry.get("dia",""), local,
+        vals = [sem, data_norm, entry.get("dia",""), local,
                 turno, entry.get("horario",""), entry.get("horas",""),
                 entry.get("sg",""), nome_str, entry.get("ra","")]
         for ci, v in enumerate(vals, 1):
@@ -687,11 +711,12 @@ def _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, se
 
             for i, dt in enumerate(todas_datas):
                 data_str = dt.strftime("%d/%m/%Y")
-                # Tentar formatos alternativos de data
-                valor = (escala_por_aluno.get(nome,{}).get(data_str) or
-                         escala_por_aluno.get(nome,{}).get(dt.strftime("%d/%m")) or
-                         escala_por_aluno.get(nome,{}).get(dt.strftime("%Y-%m-%d")) or
-                         "—")
+                data_str2 = dt.strftime("%d/%m")
+                data_str3 = dt.strftime("%Y-%m-%d")
+                aluno_datas = escala_por_aluno.get(nome, {})
+                valor = (aluno_datas.get(data_str) or
+                         aluno_datas.get(data_str2) or
+                         aluno_datas.get(data_str3) or "—")
 
                 # Cor da célula
                 if valor == "—":
@@ -758,10 +783,12 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
 
             for i, dt in enumerate(todas_datas):
                 data_str = dt.strftime("%d/%m/%Y")
-                valor = (escala_por_aluno.get(nome,{}).get(data_str) or
-                         escala_por_aluno.get(nome,{}).get(dt.strftime("%d/%m")) or
-                         escala_por_aluno.get(nome,{}).get(dt.strftime("%Y-%m-%d")) or
-                         "—")
+                data_str2 = dt.strftime("%d/%m")
+                data_str3 = dt.strftime("%Y-%m-%d")
+                aluno_datas = escala_por_aluno.get(nome, {})
+                valor = (aluno_datas.get(data_str) or
+                         aluno_datas.get(data_str2) or
+                         aluno_datas.get(data_str3) or "—")
 
                 if valor == "—":
                     cor_cel = C["FDS_CELL"] if dt.weekday() >= 5 else "FFFFFF"
