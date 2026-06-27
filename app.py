@@ -31,23 +31,30 @@ def chamar_claude(mensagens, system_prompt="", max_tokens=8000):
 def extrair_json(texto):
     import re
     if not texto: return None
+
     # 1. ```json ... ```
     m = re.search(r'```json\s*([\s\S]*?)\s*```', texto)
     if m:
         try: return json.loads(m.group(1))
         except: pass
+
     # 2. ``` ... ```
     m = re.search(r'```\s*([\s\S]*?)\s*```', texto)
     if m:
         try: return json.loads(m.group(1))
         except: pass
-    # 3. Remove comentários // e tenta parsear
+
+    # 3. Remove comentários // e tenta
     linhas = [l for l in texto.split('\n') if not l.strip().startswith('//') and not l.strip().startswith('#')]
     txt = '\n'.join(linhas)
+
+    # 4. Tenta parsear direto
     inicio = txt.find('{')
     if inicio >= 0:
         try: return json.loads(txt[inicio:])
         except: pass
+
+        # 5. Encontra maior bloco JSON válido
         depth = 0
         for i, ch in enumerate(txt[inicio:]):
             if ch == '{': depth += 1
@@ -56,11 +63,48 @@ def extrair_json(texto):
                 if depth == 0:
                     try: return json.loads(txt[inicio:inicio+i+1])
                     except: pass
-    # 4. Entre primeiro { e último }
+
+        # 6. JSON truncado — tenta completar
+        parcial = txt[inicio:].strip()
+        if parcial:
+            # Conta chaves/colchetes abertos e tenta fechar
+            try:
+                stack = []
+                in_str = False
+                escape = False
+                for ch in parcial:
+                    if escape: escape = False; continue
+                    if ch == '\\' and in_str: escape = True; continue
+                    if ch == '"' and not escape: in_str = not in_str; continue
+                    if not in_str:
+                        if ch in '{[': stack.append(ch)
+                        elif ch == '}' and stack and stack[-1] == '{': stack.pop()
+                        elif ch == ']' and stack and stack[-1] == '[': stack.pop()
+
+                # Fecha o que ficou aberto
+                fechamento = ''
+                for s in reversed(stack):
+                    fechamento += '}' if s == '{' else ']'
+
+                # Remove trailing comma/incomplete entry antes de fechar
+                parcial_limpo = re.sub(r',\s*$', '', parcial.rstrip())
+                # Remove entrada incompleta (linha que não fechou)
+                linhas_json = parcial_limpo.split('\n')
+                while linhas_json:
+                    tentativa = '\n'.join(linhas_json) + fechamento
+                    try:
+                        resultado = json.loads(tentativa)
+                        return resultado
+                    except:
+                        linhas_json.pop()  # Remove última linha e tenta novamente
+            except: pass
+
+    # 7. Entre primeiro { e último }
     try:
         s = texto.index('{'); e = texto.rindex('}') + 1
         return json.loads(texto[s:e])
     except: pass
+
     return None
 
 # ── System prompt para geração ───────────────────────────────────────────────
@@ -68,20 +112,27 @@ SYSTEM_GERAR = """Você é um especialista em escalas de internato médico.
 Gere a escala completa seguindo EXATAMENTE as regras do briefing.
 Responda APENAS com JSON válido, sem texto antes ou depois, sem comentários //.
 
+IMPORTANTE: Use formato COMPACTO para escala_detalhada — agrupe por semana+local+turno (não repita uma linha por aluno).
+
 Estrutura obrigatória:
 {
-  "confirmacao": "resumo do que entendeu",
+  "confirmacao": "resumo do que entendeu em 2-3 frases",
   "calendario_rodizio": [
-    {"semana": 1, "periodo": "06/07-12/07", "alocacao": {"SG1": "Enf", "SG2": "PS"}}
+    {"semana": 1, "periodo": "06/07-12/07", "alocacao": {"SG1": "Enf", "SG2": "PS", "SG3": "Amb"}}
   ],
   "escala_detalhada": [
-    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enf", "turno": "Manhã", "horario": "07-13h", "horas": 6, "sg": 1, "alunos": ["Nome1","Nome2"], "ra": ""}
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enf", "turno": "Manhã", "horario": "07-13h", "horas": 6, "sg": 1, "alunos": ["Nome1","Nome2","Nome3"]}
   ],
   "resumo_horas": [
-    {"sg": 1, "nome": "Nome", "ra": "", "total_horas": 40, "semanas": [40,40,40,40,40,40,40,40], "plantoes_enf_fds": 1, "plantoes_ps_fds": 4, "cinderelas": 0}
+    {"sg": 1, "nome": "Nome Completo", "ra": "", "total_horas": 40, "semanas": [40,40,40,40,40,40,40,40], "plantoes_enf_fds": 1, "plantoes_ps_fds": 4, "cinderelas": 0}
   ],
   "auditoria": {"ch_ok": true, "cobertura_ok": true, "erros": [], "avisos": [], "aprovado": true}
-}"""
+}
+
+REGRAS DE COMPACTAÇÃO:
+- escala_detalhada: 1 linha por (semana + data + local + turno), listando TODOS os alunos do SG no campo "alunos"
+- Não crie uma linha separada por aluno — isso torna o JSON enorme demais
+- resumo_horas: 1 linha por aluno com total e array de horas por semana"""
 
 # ── Mostrar resultado ────────────────────────────────────────────────────────
 def mostrar_resultado(resposta_raw, esp, grupo, turma):
@@ -331,26 +382,71 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura 
                     obs_e = st.text_input("Obs", value=loc.get("obs",""), key=f"ii_lobs_{idx}")
 
                 # Bloqueios
-                bloqs = loc.get("bloqueios_tarde", [])
+                st.markdown("**🚫 Bloqueios de tarde:**")
+                key_bloqs = f"bloqs_imp_{idx}"
+                # Só inicializa se ainda não foi definido pelo usuário
+                if key_bloqs not in st.session_state:
+                    bloqs_orig = loc.get("bloqueios_tarde", [])
+                    st.session_state[key_bloqs] = bloqs_orig
+
+                col_bloq_ctrl1, col_bloq_ctrl2 = st.columns([1,1])
+                with col_bloq_ctrl1:
+                    if st.button("➕ Adicionar bloqueio", key=f"ii_add_b_{idx}"):
+                        st.session_state[key_bloqs].append({"dia": "Seg", "tipo": "Sem tarde", "horario": ""})
+                        st.rerun()
+                with col_bloq_ctrl2:
+                    if st.session_state[key_bloqs] and st.button("🗑️ Limpar todos", key=f"ii_clear_b_{idx}"):
+                        st.session_state[key_bloqs] = []
+                        st.rerun()
+
+                if not st.session_state[key_bloqs]:
+                    st.caption("Nenhum bloqueio — tarde ocorre normalmente em todos os dias úteis.")
+
                 bloqs_e = []
-                st.caption("Bloqueios de tarde:")
-                for bi, bloq in enumerate(bloqs):
-                    bc1, bc2, bc3 = st.columns(3)
+                dias_op = ["Seg","Ter","Qua","Qui","Sex"]
+                for bi, bloq in enumerate(st.session_state[key_bloqs]):
+                    bc1, bc2, bc3, bc4 = st.columns([2,2,2,1])
                     with bc1:
-                        dias_op = ["Seg","Ter","Qua","Qui","Sex"]
                         idx_dia = dias_op.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op else 3
                         d_e = st.selectbox("Dia", dias_op, index=idx_dia, key=f"ii_bd_{idx}_{bi}")
                     with bc2:
                         t_e = st.selectbox("Tipo", ["Sem tarde","Horário reduzido"],
-                            index=0 if bloq.get("tipo","")=="Sem tarde" else 1, key=f"ii_bt_{idx}_{bi}")
+                            index=0 if bloq.get("tipo","")!="Horário reduzido" else 1, key=f"ii_bt_{idx}_{bi}")
                     with bc3:
-                        h_e = st.text_input("Horário", value=bloq.get("horario","12-16h"), key=f"ii_bh_{idx}_{bi}")
-                    bloqs_e.append({"dia": d_e, "tipo": t_e, "horario": h_e if t_e=="Horário reduzido" else ""})
+                        if t_e == "Horário reduzido":
+                            h_e = st.text_input("Horário", value=bloq.get("horario","12-16h"), key=f"ii_bh_{idx}_{bi}")
+                        else:
+                            st.text_input("Horário", value="—", disabled=True, key=f"ii_bh_{idx}_{bi}")
+                            h_e = ""
+                    with bc4:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("❌", key=f"ii_del_b_{idx}_{bi}", help="Remover"):
+                            st.session_state[key_bloqs].pop(bi)
+                            st.rerun()
+                    bloqs_e.append({"dia": d_e, "tipo": t_e, "horario": h_e})
+
+                # FDS
+                st.markdown("**🏖️ Final de Semana:**")
+                col_fds1, col_fds2, col_fds3 = st.columns(3)
+                with col_fds1:
+                    fds_m_e = st.text_input("Manhã FDS", value=loc.get("fds_manha",""), key=f"ii_fdsm_{idx}", placeholder="ex: 07-12h")
+                with col_fds2:
+                    fds_t_e = st.text_input("Tarde FDS", value=loc.get("fds_tarde",""), key=f"ii_fdst_{idx}", placeholder="ex: 13-19h")
+                with col_fds3:
+                    fds_c_e = st.text_input("Cinderela FDS", value=loc.get("fds_cind",""), key=f"ii_fdsc_{idx}", placeholder="ex: 19-23h")
+                fds_quem_e = st.text_input("Quem faz FDS?", value=loc.get("fds_quem",""), key=f"ii_fdsq_{idx}",
+                    placeholder="ex: alunos do próprio local | alunos do Ambulatório")
+                fds_comp_e = st.text_input("Compensação FDS?", value=loc.get("fds_comp",""), key=f"ii_fdscomp_{idx}",
+                    placeholder="ex: perde 1 tarde | nenhuma")
 
                 loc_e = dict(loc)
-                loc_e.update({"nome": nome_e, "manha": manha_e, "tarde": tarde_e,
-                               "cinderela": cind_e, "fds": fds_e, "obs": obs_e,
-                               "bloqueios_tarde": bloqs_e})
+                loc_e.update({
+                    "nome": nome_e, "manha": manha_e, "tarde": tarde_e,
+                    "cinderela": cind_e, "fds": fds_e, "obs": obs_e,
+                    "bloqueios_tarde": bloqs_e,
+                    "fds_manha": fds_m_e, "fds_tarde": fds_t_e, "fds_cind": fds_c_e,
+                    "fds_quem": fds_quem_e, "fds_comp": fds_comp_e,
+                })
                 locais_editados_i.append(loc_e)
 
         # Rodízio
@@ -414,7 +510,7 @@ MODIFICAÇÕES SOLICITADAS:
             with st.spinner("Gerando escala... ⏳"):
                 resp = chamar_claude(
                     [{"role": "user", "content": f"Gere a escala:\n{briefing}"}],
-                    system_prompt=SYSTEM_GERAR, max_tokens=8000
+                    system_prompt=SYSTEM_GERAR, max_tokens=16000
                 )
                 if resp:
                     st.session_state.escala_gerada = resp
@@ -752,7 +848,7 @@ Abas: {', '.join(abas_excel)}
         with st.spinner("IA gerando sua escala... ⏳ Pode levar até 2 minutos"):
             resposta = chamar_claude(
                 [{"role": "user", "content": f"Gere a escala:\n{briefing}"}],
-                system_prompt=SYSTEM_GERAR, max_tokens=8000
+                system_prompt=SYSTEM_GERAR, max_tokens=16000
             )
             if resposta:
                 st.session_state.escala_gerada = resposta
