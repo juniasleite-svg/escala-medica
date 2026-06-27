@@ -563,15 +563,50 @@ def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config,
     alvo = sorted(apenas_semanas) if apenas_semanas else list(range(1, n + 1))
     total = len(alvo) or 1
 
+    # Especificação RÍGIDA dos turnos válidos de cada serviço (impede a IA de inventar turno/FDS)
+    def _spec_servicos():
+        linhas = []
+        for loc in config.get("locais", []):
+            bloco = loc.get("nome_bloco") or loc.get("nome") or ""
+            for s in [loc] + (loc.get("servicos_extras") or []):
+                nome = s.get("nome") or s.get("abrev") or "?"
+                parts = []
+                if s.get("manha"):
+                    parts.append(f"Manhã {s.get('manha')} (min {s.get('min_manha',0)}/máx {s.get('max_manha','-')} alunos)")
+                if s.get("tarde"):
+                    parts.append(f"Tarde {s.get('tarde')} (min {s.get('min_tarde',0)}/máx {s.get('max_tarde','-')} alunos)")
+                if s.get("cinderela"):
+                    dc = s.get("dias_cind") or []
+                    parts.append(f"Cinderela {s.get('cinderela')}" + (f" SÓ em {'/'.join(dc)}" if dc else ""))
+                nao = [t for t, k in [("manhã", "manha"), ("tarde", "tarde"), ("cinderela", "cinderela")] if not s.get(k)]
+                tem_fds = bool(s.get("fds_manha") or s.get("fds_tarde") or s.get("fds_cind"))
+                bloq = []
+                for b in (s.get("bloqueios_manha") or []):
+                    bloq.append(f"manhã {b.get('dia')}={b.get('tipo')}")
+                for b in (s.get("bloqueios_tarde") or []):
+                    bloq.append(f"tarde {b.get('dia')}={b.get('tipo')}")
+                linha = f"- {nome} (bloco {bloco}): " + ("; ".join(parts) if parts else "sem turnos")
+                if nao:
+                    linha += f" | NÃO TEM: {', '.join(nao)}"
+                linha += " | COM plantão de fim de semana" if tem_fds else " | SEM fim de semana (só Seg–Sex)"
+                if bloq:
+                    linha += f" | bloqueios: {', '.join(bloq)}"
+                linhas.append(linha)
+        return "\n".join(linhas)
+    spec = _spec_servicos()
+
     def _msg(sem):
         return (
             f"Briefing:\n{briefing}\n\n"
             f"Calendário de rodízio (todas as semanas):\n{calendario_json}\n\n"
             f"Alunos por subgrupo:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\n"
-            f"Gere a escala_detalhada APENAS da SEMANA {sem}: todos os locais ativos nessa semana, "
-            f"todos os turnos em todos os dias úteis (e FDS se houver), com os alunos REVEZADOS para "
-            f"ninguém passar de {limite}h. Respeite o mín/máx por turno e divida os alunos entre os "
-            f"serviços de cada bloco. NÃO gere outras semanas."
+            f"⛔ TURNOS VÁLIDOS DE CADA SERVIÇO — use SOMENTE estes. É PROIBIDO criar turno que o serviço "
+            f"não tem (ex.: tarde numa enfermaria só-manhã) e PROIBIDO criar Sábado/Domingo em serviço "
+            f"marcado 'SEM fim de semana':\n{spec}\n\n"
+            f"Gere a escala_detalhada APENAS da SEMANA {sem}. Para CADA serviço ATIVO nesta semana "
+            f"(veja o calendário), gere CADA turno VÁLIDO em TODOS os dias úteis Seg–Sex (exceto bloqueios), "
+            f"com os alunos REVEZADOS para ninguém passar de {limite}h e respeitando o mín/máx por turno. "
+            f"Divida os alunos entre os serviços de cada bloco. NÃO gere outras semanas."
         )
 
     resultados = {}
@@ -1437,15 +1472,9 @@ Extras: {regras_extras}
             if det:
                 dados1["escala_detalhada"] = det
                 dados1["resumo_horas"] = recalcular_resumo_horas(dados1, st.session_state.config_atual)
-                st.success(f"✅ Escala detalhada: {len(det)} entradas")
-
-                # Validação real + 1 passe rápido de rebalanceamento (em paralelo).
-                # Passes adicionais ficam a cargo do botão "Rebalancear" (você decide quando).
-                val0 = validar_escala(dados1, st.session_state.config_atual)
-                if not val0["ok"]:
-                    n_est, n_con = len(val0["estouros"]), len(val0["conflitos"])
-                    with st.spinner(f"⚖️ Rebalanceando turnos ({n_est} estouro(s) de CH, {n_con} conflito(s))... ⏳"):
-                        dados1, _ = corrigir_escala_loop(dados1, st.session_state.config_atual, briefing, max_rodadas=1)
+                st.success(f"✅ Escala detalhada: {len(det)} entradas — resultado e Excel já disponíveis abaixo.")
+                # NÃO rebalanceia aqui (pra não te fazer esperar). O resultado mostra a validação real
+                # e, se houver estouro, o botão "🔧 Rebalancear automaticamente" faz a correção quando você quiser.
             else:
                 st.warning("⚠️ Passo 2 não retornou dados. Tente o botão 'Gerar escala detalhada agora' abaixo.")
 
@@ -1490,10 +1519,6 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
                 base = [e for e in det_atual if int(e.get("semana", 0)) not in {int(x.get("semana", 0)) for x in novas}]
                 dados_atual["escala_detalhada"] = base + novas
                 dados_atual["resumo_horas"] = recalcular_resumo_horas(dados_atual, cfg_atual)
-                val0 = validar_escala(dados_atual, cfg_atual)
-                if not val0["ok"]:
-                    with st.spinner("⚖️ Rebalanceando turnos para respeitar as regras... ⏳"):
-                        dados_atual, _ = corrigir_escala_loop(dados_atual, cfg_atual, briefing_atual, max_rodadas=1)
                 st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
                 st.success(f"✅ {len(novas)} entradas adicionadas!")
                 st.rerun()
