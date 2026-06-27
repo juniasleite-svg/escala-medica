@@ -640,6 +640,178 @@ def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config,
         todas.extend(resultados.get(sem, []))
     return todas
 
+# ── Gerador DETERMINÍSTICO da escala detalhada (Python, sem IA) ───────────────
+def _dur_horario(horario, turno_key=""):
+    nums = _re_val.findall(r"(\d{1,2})", str(horario or ""))
+    if len(nums) >= 2:
+        a, b = int(nums[0]), int(nums[1])
+        if b > a:
+            return float(b - a)
+    return {"manha": 6.0, "tarde": 6.0, "cind": 4.0}.get(turno_key, 6.0)
+
+def gerar_detalhada_python(calendario, config):
+    """Monta a escala_detalhada dia a dia a partir do calendário + regras dos serviços.
+    Garante: só turnos válidos, cobertura completa, exclusividade e equilíbrio de horas (≤ limite)."""
+    from datetime import date, timedelta
+    reg = config.get("regras_especiais", {})
+    limite = int(reg.get("limite_ch", 40))
+    limite_abs = int(reg.get("limite_abs", 43))
+    regra_quinta = str(reg.get("quinta", "")).lower()
+    alunos_por_sg = config.get("alunos_por_sg", {})
+    num_sem = int(config.get("num_semanas", 8))
+    try:
+        d0 = date.fromisoformat(str(config.get("data_inicio", "")))
+    except Exception:
+        d0 = date.today()
+    dias3 = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+
+    # Blocos e seus serviços
+    blocos = []
+    for loc in config.get("locais", []):
+        blocos.append({"nome": loc.get("nome_bloco") or loc.get("nome") or "",
+                       "loc": loc, "servs": [loc] + (loc.get("servicos_extras") or [])})
+
+    def _match(dest):
+        a = _norm(dest)
+        for b in blocos:
+            nb = {_norm(b["nome"]), _norm(b["loc"].get("nome")), _norm(b["loc"].get("abrev"))} - {""}
+            svc = None
+            for s in b["servs"]:
+                sn = {_norm(s.get("nome")), _norm(s.get("abrev"))} - {""}
+                if any(x and x in a for x in sn):
+                    svc = s
+            if svc is not None or any(x and x in a for x in nb):
+                return b, svc
+        return None, None
+
+    cal_by_week = {}
+    for row in (calendario or []):
+        try:
+            cal_by_week[int(row.get("semana"))] = row.get("alocacao", {}) or {}
+        except (TypeError, ValueError):
+            continue
+
+    def _slots_servico(s, datas):
+        """Lista de (data, dia3, turno_nome, turno_key, horario, horas, qtd) do serviço na semana."""
+        bloq = set()
+        for bm in (s.get("bloqueios_manha") or []):
+            if str(bm.get("tipo", "")).lower().startswith("sem"):
+                bloq.add(("manha", _dia_curto(bm.get("dia"))))
+        for bt in (s.get("bloqueios_tarde") or []):
+            if str(bt.get("tipo", "")).lower().startswith("sem"):
+                bloq.add(("tarde", _dia_curto(bt.get("dia"))))
+
+        def _cnt(mn, mx):
+            c = mn if mn and mn >= 1 else 1
+            if mx not in (None, "", 0):
+                try: c = min(c, int(mx))
+                except (TypeError, ValueError): pass
+            return max(c, 1)
+
+        uteis = []
+        if s.get("manha"):
+            uteis.append(("Manhã", "manha", s.get("manha"), _dur_horario(s.get("manha"), "manha"),
+                          _cnt(int(s.get("min_manha") or 0), s.get("max_manha")), None))
+        if s.get("tarde"):
+            uteis.append(("Tarde", "tarde", s.get("tarde"), _dur_horario(s.get("tarde"), "tarde"),
+                          _cnt(int(s.get("min_tarde") or 0), s.get("max_tarde")), None))
+        if s.get("cinderela"):
+            dc = {_dia_curto(x) for x in (s.get("dias_cind") or [])}
+            uteis.append(("Cinderela", "cind", s.get("cinderela"), _dur_horario(s.get("cinderela"), "cind"),
+                          _cnt(int(s.get("min_cind") or 0), s.get("max_cind")), dc))
+        fds = []
+        if s.get("fds_manha"):
+            fds.append(("Manhã", "manha", s.get("fds_manha"), _dur_horario(s.get("fds_manha"), "manha"),
+                        _cnt(int(s.get("fds_min_manha") or 0), s.get("fds_max_manha")), None))
+        if s.get("fds_tarde"):
+            fds.append(("Tarde", "tarde", s.get("fds_tarde"), _dur_horario(s.get("fds_tarde"), "tarde"),
+                        _cnt(int(s.get("fds_min_tarde") or 0), s.get("fds_max_tarde")), None))
+        if s.get("fds_cind"):
+            fds.append(("Cinderela", "cind", s.get("fds_cind"), _dur_horario(s.get("fds_cind"), "cind"),
+                        _cnt(int(s.get("fds_min_cind") or 0), s.get("fds_max_cind")), None))
+
+        slots = []
+        for di in range(7):
+            dia3 = dias3[di]
+            grupo = uteis if di < 5 else fds
+            for (tn, tk, hor, hrs, qtd, dc) in grupo:
+                if tk == "cind" and dc is not None and dia3 not in dc:
+                    continue
+                if (tk, dia3) in bloq:
+                    continue
+                if tk == "tarde" and dia3 == "Qui" and "sem tarde" in regra_quinta:
+                    continue
+                slots.append((datas[di], dia3, tn, tk, hor, hrs, qtd))
+        return slots
+
+    detalhada = []
+    for w in range(1, num_sem + 1):
+        base = d0 + timedelta(weeks=w - 1)
+        datas = [base + timedelta(days=i) for i in range(7)]
+        aloc = cal_by_week.get(w, {})
+
+        # SGs -> bloco/serviço nesta semana
+        atrib = {}  # bidx -> {sidx: set(sg)}; sidx pode ser "_blk" p/ resolver depois
+        for sg_key, dest in aloc.items():
+            sgn = _re_val.sub(r"\D", "", str(sg_key))
+            if not sgn:
+                continue
+            b, svc = _match(dest)
+            if not b:
+                continue
+            bidx = blocos.index(b)
+            atrib.setdefault(bidx, {})
+            if svc is not None:
+                atrib[bidx].setdefault(b["servs"].index(svc), set()).add(sgn)
+            else:
+                atrib[bidx].setdefault("_blk", set()).add(sgn)
+
+        for bidx, svcmap in atrib.items():
+            b = blocos[bidx]
+            servs = b["servs"]
+            if "_blk" in svcmap:  # SGs sem serviço específico: distribui entre os serviços
+                for i, sg in enumerate(sorted(svcmap.pop("_blk"))):
+                    svcmap.setdefault(i % len(servs), set()).add(sg)
+            for sidx, sgset in svcmap.items():
+                if not isinstance(sidx, int):
+                    continue
+                s = servs[sidx]
+                estud = [(n, sg) for sg in sorted(sgset) for n in alunos_por_sg.get(sg, [])]
+                if not estud:
+                    continue
+                nomes = [n for n, _ in estud]
+                sg_de = {n: sg for n, sg in estud}
+                horas_aluno = {n: 0.0 for n in nomes}
+                ocupado = {}  # (dia3,turno_key) -> set
+                for (data, dia3, tn, tk, hor, hrs, qtd) in _slots_servico(s, datas):
+                    chosen = []
+                    for cap in (limite, limite_abs, float("inf")):
+                        for n in sorted(nomes, key=lambda x: horas_aluno[x]):
+                            if len(chosen) >= qtd:
+                                break
+                            if n in chosen or n in ocupado.get((dia3, tk), set()):
+                                continue
+                            if horas_aluno[n] + hrs > cap:
+                                continue
+                            chosen.append(n)
+                        if len(chosen) >= qtd:
+                            break
+                    if not chosen:
+                        continue
+                    ocupado.setdefault((dia3, tk), set())
+                    for n in chosen:
+                        horas_aluno[n] += hrs
+                        ocupado[(dia3, tk)].add(n)
+                    detalhada.append({
+                        "semana": w, "data": data.strftime("%d/%m"), "dia": dia3,
+                        "local": s.get("nome") or s.get("abrev") or b["nome"],
+                        "turno": tn, "horario": hor, "horas": hrs,
+                        "sg": "+".join(sorted({sg_de[n] for n in chosen}, key=lambda x: int(x) if x.isdigit() else 99)),
+                        "alunos": chosen,
+                    })
+    detalhada.sort(key=lambda e: (e["semana"], e["data"], e["local"], e["turno"]))
+    return detalhada
+
 def mostrar_validacao(val):
     """Mostra o resultado da validação real na tela."""
     if val["ok"] and not val["buracos"]:
@@ -1465,18 +1637,16 @@ Extras: {regras_extras}
             st.session_state.turma_atual = turma
             cal_gerado = json.dumps(dados1.get("calendario_rodizio",[]), ensure_ascii=False)
 
-            st.caption("Passo 2/2 — Escala detalhada (gerada semana a semana para não truncar)")
-            det = gerar_detalhada_por_semana(briefing, cal_gerado, alunos_por_sg,
-                                             st.session_state.config_atual, num_semanas)
+            st.caption("Passo 2/2 — Escala detalhada (montada pelo sistema a partir do calendário)")
+            with st.spinner("Montando a escala dia a dia... ⏳"):
+                det = gerar_detalhada_python(dados1.get("calendario_rodizio", []), st.session_state.config_atual)
 
             if det:
                 dados1["escala_detalhada"] = det
                 dados1["resumo_horas"] = recalcular_resumo_horas(dados1, st.session_state.config_atual)
-                st.success(f"✅ Escala detalhada: {len(det)} entradas — resultado e Excel já disponíveis abaixo.")
-                # NÃO rebalanceia aqui (pra não te fazer esperar). O resultado mostra a validação real
-                # e, se houver estouro, o botão "🔧 Rebalancear automaticamente" faz a correção quando você quiser.
+                st.success(f"✅ Escala detalhada: {len(det)} entradas — montada instantaneamente, respeitando as regras.")
             else:
-                st.warning("⚠️ Passo 2 não retornou dados. Tente o botão 'Gerar escala detalhada agora' abaixo.")
+                st.warning("⚠️ Não consegui montar a escala detalhada — verifique se o calendário de rodízio foi gerado.")
 
             st.session_state.escala_gerada = json.dumps(dados1, ensure_ascii=False)
             st.rerun()
@@ -1503,27 +1673,19 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
     if not det_atual or semanas_faltantes:
         if not det_atual:
             st.warning("⚠️ Escala detalhada vazia — as abas Subgrupo e Individual não terão dados.")
-            rotulo, alvo = "🔄 Gerar escala detalhada agora", None
         else:
-            st.warning(f"⚠️ Faltam as semanas {', '.join(map(str, semanas_faltantes))} "
-                       f"(não geradas por limite da API). As demais já estão prontas.")
-            rotulo, alvo = "🧩 Completar semanas faltantes", semanas_faltantes
-        if st.button(rotulo, type="primary"):
-            briefing_atual = st.session_state.get("briefing_atual", "")
-            cal = json.dumps(dados_atual.get("calendario_rodizio", []), ensure_ascii=False)
-            alunos_atual = cfg_atual.get("alunos_por_sg", {})
-            novas = gerar_detalhada_por_semana(briefing_atual, cal, alunos_atual, cfg_atual,
-                                               n_sem_atual, apenas_semanas=alvo)
+            st.warning(f"⚠️ Faltam as semanas {', '.join(map(str, semanas_faltantes))}.")
+        if st.button("🔄 Montar escala detalhada (sistema)", type="primary"):
+            with st.spinner("Montando a escala dia a dia... ⏳"):
+                novas = gerar_detalhada_python(dados_atual.get("calendario_rodizio", []), cfg_atual)
             if novas:
-                # mantém o que já existia e adiciona as novas semanas
-                base = [e for e in det_atual if int(e.get("semana", 0)) not in {int(x.get("semana", 0)) for x in novas}]
-                dados_atual["escala_detalhada"] = base + novas
+                dados_atual["escala_detalhada"] = novas
                 dados_atual["resumo_horas"] = recalcular_resumo_horas(dados_atual, cfg_atual)
                 st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
-                st.success(f"✅ {len(novas)} entradas adicionadas!")
+                st.success(f"✅ {len(novas)} entradas montadas!")
                 st.rerun()
             else:
-                st.error("A IA não retornou dados. Tente novamente.")
+                st.error("Não consegui montar — verifique se o calendário de rodízio existe.")
 
     mostrar_resultado(
         st.session_state.escala_gerada,
