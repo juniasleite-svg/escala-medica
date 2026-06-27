@@ -3,3 +3,4 @@ pandas>=2.0.0
 openpyxl>=3.1.0
 python-pptx>=0.6.21
 xlrd>=2.0.1
+anthropic>=0.20.0
