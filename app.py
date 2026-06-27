@@ -141,32 +141,48 @@ SYSTEM_DETALHE = """Você é um especialista em escalas de internato médico.
 Com base no briefing e no calendário de rodízio fornecido, gere APENAS a escala_detalhada.
 Responda APENAS com JSON válido, sem texto antes ou depois.
 
-REGRAS CRÍTICAS — SIGA À RISCA:
+═══════════ A REGRA QUE MAIS SE ERRA: CARGA HORÁRIA POR ALUNO ═══════════
+O limite (veja o briefing, em geral 40h) é por SEMANA e por ALUNO INDIVIDUAL — não por serviço.
+Um turno de manhã (~6h) + tarde (~6h) no MESMO dia = ~12h. Fazer isso 5 dias = 60h → PROIBIDO.
+➡️ NUNCA coloque o mesmo aluno em manhã + tarde (+ cinderela) todos os dias da semana.
 
-1. COBERTURA OBRIGATÓRIA: Para CADA local, gere UMA entrada para CADA turno em CADA dia útil.
-   - Se o local tem Manhã: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
-   - Se o local tem Tarde: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
-   - Se o local tem Cinderela: gere entrada para os dias configurados
-   - NÃO pule nenhum dia sem justificativa explícita de bloqueio
+✅ COMO ACERTAR — REVEZAMENTO DE TURNOS ENTRE OS ALUNOS:
+Os alunos de um mesmo serviço se DIVIDEM e se REVEZAM nos turnos, para que CADA UM fique ≤ limite.
+Exemplo (4 alunos A,B,C,D num serviço com manhã e tarde):
+   Seg: Manhã=[A,B]  Tarde=[C,D]
+   Ter: Manhã=[C,D]  Tarde=[A,B]
+   Qua: Manhã=[A,B]  Tarde=[C,D]
+   Qui: Manhã=[C,D]  Tarde=[A,B]
+   Sex: Manhã=[A,B]  Tarde=[C,D]
+Assim cada aluno faz ~metade dos turnos e fica dentro do limite. NÃO repita o mesmo aluno em todos os turnos.
 
-2. BLOQUEIOS: Só omita um turno se houver bloqueio explícito no briefing para aquele dia.
-   - "Sem tarde na quinta" → omite APENAS quinta tarde
-   - "Terça tarde 12-16h" → gera tarde de terça com horário reduzido, NÃO omite
-   - NUNCA omita segunda ou terça à tarde sem bloqueio explícito
+═══════════ QUANTIDADE DE ALUNOS POR TURNO (mín/máx) ═══════════
+Cada serviço tem mín e máx de alunos por turno/dia (no briefing). Coloque a quantidade DENTRO dessa faixa
+em CADA turno de CADA dia. Se a Enfermaria pede 2 por manhã, coloque exatamente 2 (não 4).
 
-3. EXCLUSIVIDADE: Um aluno NUNCA aparece em 2 serviços do mesmo bloco no mesmo turno.
+═══════════ BLOCO COM VÁRIOS SERVIÇOS (rodízio interno) ═══════════
+Quando um bloco tem 2+ serviços (ex: Bloco Pediátrico = Enfermaria + PA Mandic):
+- DIVIDA os alunos do bloco ENTRE os serviços ao mesmo tempo (ex: parte na Enf, parte no PA).
+- NENHUM serviço do bloco pode ficar VAZIO numa semana em que o bloco está ativo.
+- Ao longo das semanas, TROQUE: quem estava na Enf vai pro PA e vice-versa.
+- Um aluno nunca aparece em 2 serviços/locais no mesmo dia/turno.
 
-4. FORMATO: 1 entrada por (semana + data + local + turno), todos os alunos do SG.
-   - Datas: DD/MM (ex: "06/07")
-   - horas: duração do turno em horas (manhã 6h, tarde 6h, cinderela 4h)
+═══════════ COBERTURA E BLOQUEIOS ═══════════
+1. Para CADA serviço ativo, gere entrada para CADA turno em CADA dia útil (Seg–Sex), exceto bloqueios.
+2. Só omita um turno se houver bloqueio explícito ("Sem tarde na quinta" → só quinta tarde).
+   "Terça tarde 12-16h" → gere a tarde de terça reduzida, NÃO omita.
 
-5. VERIFICAÇÃO ANTES DE RESPONDER: Confirme que cada local+turno tem entradas para todos os dias úteis esperados. Se faltar algum, adicione.
+FORMATO: 1 entrada por (semana + data + local + turno), listando os alunos daquele turno.
+   - Datas: DD/MM ; horas: duração do turno (manhã 6h, tarde 6h, cinderela 4h).
+
+⚠️ ANTES DE RESPONDER: para CADA aluno, some as horas da semana. Se algum passar do limite, redistribua
+os turnos entre os colegas do subgrupo até todos ficarem ≤ limite.
 
 Formato:
 {
   "escala_detalhada": [
-    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Manhã", "horario": "08-12h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]},
-    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Tarde", "horario": "13-17h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]}
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enfermaria", "turno": "Manhã", "horario": "07-13h", "horas": 6, "sg": 1, "alunos": ["Nome1","Nome2"]},
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enfermaria", "turno": "Tarde", "horario": "13-19h", "horas": 6, "sg": 1, "alunos": ["Nome3","Nome4"]}
   ]
 }"""
 
@@ -265,8 +281,44 @@ def _bloqueios_map(config):
                         blk["tarde"].add((n, _dia_curto(b.get("dia"))))
     return blk
 
+def _norm(s):
+    return str(s or "").strip().lower()
+
+def _nome_bate(nomes_set, local_lower):
+    """Casa um conjunto de nomes/abreviações de serviço com o nome do local da entrada."""
+    if local_lower in nomes_set:
+        return True
+    return any(n and (n in local_lower or local_lower in n) for n in nomes_set)
+
+def _servicos_config(config):
+    """Lista de serviços a partir do config: nomes, bloco e (min,max) por turno."""
+    servs = []
+    for loc in config.get("locais", []):
+        bloco = loc.get("nome_bloco") or loc.get("nome") or ""
+        irmaos = [loc] + (loc.get("servicos_extras") or [])
+        for s in irmaos:
+            nomes = {_norm(s.get("nome")), _norm(s.get("abrev"))} - {""}
+            if not nomes:
+                continue
+            turnos = {}
+            for tk, (mn, mx, ativo) in {
+                "manha": (s.get("min_manha"), s.get("max_manha"), s.get("manha")),
+                "tarde": (s.get("min_tarde"), s.get("max_tarde"), s.get("tarde")),
+                "cind":  (s.get("min_cind"),  s.get("max_cind"),  s.get("cinderela")),
+            }.items():
+                if not ativo:
+                    continue
+                try: mn = int(mn or 0)
+                except (TypeError, ValueError): mn = 0
+                try: mx = int(mx) if mx not in (None, "", 0) else None
+                except (TypeError, ValueError): mx = None
+                turnos[tk] = (mn, mx)
+            servs.append({"nomes": nomes, "bloco": bloco,
+                          "label": s.get("nome") or s.get("abrev") or "", "turnos": turnos})
+    return servs
+
 def validar_escala(dados, config):
-    """Confere a escala_detalhada de verdade: horas/semana, conflitos e cobertura."""
+    """Confere a escala de verdade: horas/semana, conflitos, cobertura, mín/máx por serviço e rodízio dentro do bloco."""
     det = dados.get("escala_detalhada") or []
     reg = config.get("regras_especiais", {})
     limite = int(reg.get("limite_ch", 40))
@@ -276,6 +328,7 @@ def validar_escala(dados, config):
     horas = _dd(float)   # (aluno, semana) -> horas
     ocup = _dd(set)      # (aluno, semana, dia, turno) -> {locais}
     cob = _dd(set)       # (local, turno, semana) -> {dias}
+    qtd = _dd(int)       # (local, turno, semana, dia) -> nº alunos
 
     for e in det:
         sem = e.get("semana", "?")
@@ -283,10 +336,12 @@ def validar_escala(dados, config):
         turno = _turno_key(e.get("turno"))
         local = str(e.get("local", "?"))
         h = _horas_entrada(e)
-        for al in _alunos_entrada(e):
+        als = _alunos_entrada(e)
+        for al in als:
             horas[(al, sem)] += h
             ocup[(al, sem, dia, turno)].add(local)
         cob[(local, turno, sem)].add(dia)
+        qtd[(local, turno, sem, dia)] += len(als)
 
     estouros = []
     for (al, sem), h in horas.items():
@@ -319,12 +374,49 @@ def validar_escala(dados, config):
         if falt:
             buracos.append({"local": local, "turno": turno, "semana": sem, "dias": falt})
 
-    semanas_ruins = sorted({e["semana"] for e in estouros} | {c["semana"] for c in conflitos},
-                           key=lambda x: int(x) if str(x).isdigit() else 999)
+    # ── Mín/máx de alunos por serviço/turno/dia ──────────────────────────────
+    servs_cfg = _servicos_config(config)
+    desvios = []
+    for (local, turno, sem, dia), n in qtd.items():
+        srv = next((s for s in servs_cfg if turno in s["turnos"] and _nome_bate(s["nomes"], _norm(local))), None)
+        if not srv:
+            continue
+        mn, mx = srv["turnos"][turno]
+        if n < mn:
+            desvios.append({"local": local, "turno": turno, "semana": sem, "dia": dia, "qtd": n, "min": mn, "max": mx, "tipo": "abaixo"})
+        elif mx is not None and n > mx:
+            desvios.append({"local": local, "turno": turno, "semana": sem, "dia": dia, "qtd": n, "min": mn, "max": mx, "tipo": "acima"})
+
+    # ── Rodízio dentro do bloco: serviço do bloco sem ninguém numa semana ativa ─
+    presentes_sem = _dd(set)  # semana -> {local_lower presentes}
+    for (local, turno, sem) in cob.keys():
+        presentes_sem[sem].add(_norm(local))
+    ausentes = []
+    for loc in config.get("locais", []):
+        irmaos = [loc] + (loc.get("servicos_extras") or [])
+        if len(irmaos) < 2:
+            continue
+        bloco = loc.get("nome_bloco") or loc.get("nome") or ""
+        nomes_irmaos = [({_norm(s.get("nome")), _norm(s.get("abrev"))} - {""}) for s in irmaos]
+        for sem, presentes in presentes_sem.items():
+            ativos = [i for i, nm in enumerate(nomes_irmaos) if nm and any(_nome_bate(nm, p) for p in presentes)]
+            if not ativos:
+                continue  # bloco não está ativo nesta semana
+            for i, s in enumerate(irmaos):
+                nm = nomes_irmaos[i]
+                if nm and not any(_nome_bate(nm, p) for p in presentes):
+                    ausentes.append({"servico": s.get("nome") or s.get("abrev") or f"serviço {i+1}",
+                                     "bloco": bloco, "semana": sem})
+
+    semanas_ruins = sorted(
+        {e["semana"] for e in estouros} | {c["semana"] for c in conflitos}
+        | {d["semana"] for d in desvios} | {a["semana"] for a in ausentes},
+        key=lambda x: int(x) if str(x).isdigit() else 999)
     return {
         "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
+        "desvios": desvios, "ausentes": ausentes,
         "limite": limite, "limite_abs": limite_abs,
-        "ok": (not estouros and not conflitos),
+        "ok": (not estouros and not conflitos and not desvios and not ausentes),
         "semanas_ruins": semanas_ruins,
     }
 
@@ -388,13 +480,24 @@ def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
             entradas_sem = [e for e in det if e.get("semana") == sem]
             est = [e for e in val["estouros"] if e["semana"] == sem]
             con = [c for c in val["conflitos"] if c["semana"] == sem]
-            if not entradas_sem or (not est and not con):
+            des = [d for d in val.get("desvios", []) if d["semana"] == sem]
+            aus = [a for a in val.get("ausentes", []) if a["semana"] == sem]
+            if not entradas_sem or (not est and not con and not des and not aus):
                 continue
             problemas = []
             for e in est:
                 problemas.append(f"- {e['aluno']}: {e['horas']}h nesta semana (limite {val['limite']}h) — reduza para no máximo {val['limite']}h")
             for c in con:
                 problemas.append(f"- {c['aluno']}: em 2 locais no mesmo {c['dia']}/{c['turno']} ({', '.join(c['locais'])}) — deixe em apenas um")
+            for d in des:
+                faixa = f"entre {d['min']} e {d['max']}" if d['max'] is not None else f"no mínimo {d['min']}"
+                problemas.append(f"- {d['local']}/{d['turno']} em {d['dia']}: tem {d['qtd']} alunos — ajuste para {faixa}")
+            aus_vistos = set()
+            for a in aus:
+                if a["servico"] in aus_vistos:
+                    continue
+                aus_vistos.add(a["servico"])
+                problemas.append(f"- O serviço '{a['servico']}' (bloco {a['bloco']}) ficou SEM ninguém — divida os alunos do bloco entre os serviços (revezamento), parte aqui e parte nos outros")
             msg = (
                 f"{ctx}\n\nSEMANA {sem} — VIOLAÇÕES A CORRIGIR:\n" + "\n".join(problemas) +
                 f"\n\nENTRADAS ATUAIS DESTA SEMANA (corrija e devolva TODAS):\n" +
@@ -439,6 +542,22 @@ def mostrar_validacao(val):
         st.error(f"❌ **{len(val['conflitos'])} caso(s) de aluno em 2 locais ao mesmo tempo:**")
         for c in val["conflitos"][:30]:
             st.markdown(f"- **{c['aluno']}** — sem {c['semana']}, {c['dia']} {c['turno']}: {', '.join(c['locais'])}")
+    if val.get("desvios"):
+        acima = [d for d in val["desvios"] if d["tipo"] == "acima"]
+        abaixo = [d for d in val["desvios"] if d["tipo"] == "abaixo"]
+        st.error(f"❌ **{len(val['desvios'])} caso(s) com número de alunos fora do configurado por serviço/turno:**")
+        for d in (acima + abaixo)[:30]:
+            faixa = f"{d['min']}–{d['max']}" if d['max'] is not None else f"mín {d['min']}"
+            st.markdown(f"- {d['local']} / {d['turno']} — sem {d['semana']}, {d['dia']}: **{d['qtd']} alunos** (esperado {faixa})")
+    if val.get("ausentes"):
+        st.error("❌ **Serviços de um bloco que ficaram sem ninguém (falta rodízio interno):**")
+        vistos = set()
+        for a in val["ausentes"]:
+            chave = (a["servico"], a["semana"])
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            st.markdown(f"- **{a['servico']}** (bloco {a['bloco']}) — sem {a['semana']}: ninguém alocado; distribua parte dos alunos do bloco para cá")
     if val["buracos"]:
         st.warning("⚠️ **Possíveis dias sem cobertura** (confira se não é bloqueio legítimo):")
         for b in val["buracos"][:30]:
@@ -1227,7 +1346,7 @@ Extras: {regras_extras}
 
             with st.spinner("Passo 2/2 — Escala detalhada dia a dia... ⏳"):
                 resp2 = chamar_claude(
-                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário gerado:\n{cal_gerado}\n\nAlunos:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos em TODOS os dias das {num_semanas} semanas."}],
+                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário gerado:\n{cal_gerado}\n\nAlunos:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos em TODOS os dias das {num_semanas} semanas.\n\nLEMBRE-SE: reveze os turnos entre os alunos de cada subgrupo para que NENHUM aluno passe de {limite_ch}h/semana (não coloque o mesmo aluno em manhã+tarde+cinderela todo dia); respeite o mín/máx de alunos por turno de cada serviço; e em blocos com vários serviços, divida os alunos entre os serviços (nenhum serviço pode ficar vazio)."}],
                     system_prompt=SYSTEM_DETALHE, max_tokens=16000
                 )
 
@@ -1271,9 +1390,10 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
             cal = json.dumps(dados_atual.get("calendario_rodizio",[]), ensure_ascii=False)
             alunos_atual = st.session_state.get("config_atual",{}).get("alunos_por_sg",{})
             n_sem_atual = st.session_state.get("config_atual",{}).get("num_semanas",8)
+            limite_atual = st.session_state.get("config_atual",{}).get("regras_especiais",{}).get("limite_ch",40)
             with st.spinner("Gerando escala detalhada... ⏳"):
                 resp_det = chamar_claude(
-                    [{"role": "user", "content": f"Briefing:\n{briefing_atual}\n\nCalendário:\n{cal}\n\nAlunos:\n{json.dumps(alunos_atual, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos nas {n_sem_atual} semanas."}],
+                    [{"role": "user", "content": f"Briefing:\n{briefing_atual}\n\nCalendário:\n{cal}\n\nAlunos:\n{json.dumps(alunos_atual, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos nas {n_sem_atual} semanas.\n\nLEMBRE-SE: reveze os turnos entre os alunos de cada subgrupo para que NENHUM aluno passe de {limite_atual}h/semana (não coloque o mesmo aluno em manhã+tarde+cinderela todo dia); respeite o mín/máx de alunos por turno de cada serviço; e em blocos com vários serviços, divida os alunos entre os serviços (nenhum serviço pode ficar vazio)."}],
                     system_prompt=SYSTEM_DETALHE, max_tokens=16000
                 )
             if resp_det:
