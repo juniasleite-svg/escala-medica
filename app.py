@@ -115,7 +115,12 @@ Responda APENAS com JSON válido, sem texto antes ou depois, sem comentários //
 REGRAS FUNDAMENTAIS:
 1. EXCLUSIVIDADE POR BLOCO: Cada bloco de rodízio pode ter vários serviços (ex: Bloco BP = Enf + PA Mandic). Um aluno SÓ pode estar em UM serviço do bloco por vez — nunca em dois serviços do mesmo bloco simultaneamente no mesmo dia/turno.
 2. RODÍZIO INTERNO: Se o bloco tem 2 serviços e 4 SGs, 2 SGs vão ao Serviço 1 e 2 SGs vão ao Serviço 2. Eles NÃO se misturam no mesmo turno.
-3. CH SEMANAL: Respeite os limites de carga horária definidos no briefing.
+3. LIMITE DE CH SEMANAL — REGRA MAIS IMPORTANTE:
+   - O limite é de 40h por semana por aluno (absoluto máximo: 43h).
+   - Conte as horas de TODOS os turnos do dia: manhã (6h) + tarde (6h) + cinderela (4h) = 16h em UM dia.
+   - Se um local tem manhã + tarde + cinderela 5 dias por semana = 80h → PROIBIDO.
+   - Cinderela e turnos extras devem ser distribuídos para NÃO ultrapassar 40h/sem.
+   - No resumo_horas, CALCULE as horas reais antes de preencher: some todos os turnos do SG na semana.
 4. BLOQUEIOS: Aplique todos os bloqueios de manhã, tarde e FDS conforme configurado.
 
 Estrutura obrigatória:
@@ -487,6 +492,48 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
         help="Cada bloco é um local de rodízio que pode conter 1 ou mais serviços vinculados.")
     locais = []
 
+    # ── Configuração global do rodízio ──────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**🔢 Distribuição de semanas entre os blocos (rodízio global)**")
+    st.caption(
+        f"Defina quantas semanas cada SG passa em cada bloco. "
+        f"A soma deve ser igual ao total de semanas ({int(num_semanas)})."
+    )
+
+    # Recuperar ou inicializar distribuição salva
+    key_rot = "rotacao_global"
+    if key_rot not in st.session_state or len(st.session_state[key_rot]) != int(num_locais):
+        # Distribuição padrão: divide igualmente, resto vai para os primeiros blocos
+        base = int(num_semanas) // int(num_locais)
+        resto = int(num_semanas) % int(num_locais)
+        st.session_state[key_rot] = [base + (1 if j < resto else 0) for j in range(int(num_locais))]
+
+    cols_rot = st.columns(int(num_locais))
+    rotacao_semanas = []
+    for j in range(int(num_locais)):
+        nome_bloco_j = pf_locais[j].get("nome_bloco", pf_locais[j].get("nome", f"Bloco {j+1}")) if j < len(pf_locais) else f"Bloco {j+1}"
+        with cols_rot[j]:
+            val = st.number_input(
+                f"Bloco {j+1}",
+                min_value=1, max_value=int(num_semanas),
+                value=st.session_state[key_rot][j],
+                key=f"rot_sem_{j}",
+                help=nome_bloco_j
+            )
+            rotacao_semanas.append(val)
+            st.caption(nome_bloco_j[:20])
+
+    soma_rot = sum(rotacao_semanas)
+    if soma_rot == int(num_semanas):
+        st.success(f"✅ {' + '.join(str(v) for v in rotacao_semanas)} = {soma_rot} semanas — OK!")
+        st.session_state[key_rot] = rotacao_semanas
+    elif soma_rot < int(num_semanas):
+        st.warning(f"⚠️ Soma atual: {soma_rot} de {int(num_semanas)} semanas — faltam {int(num_semanas)-soma_rot}")
+    else:
+        st.error(f"❌ Soma atual: {soma_rot} — excede {int(num_semanas)} semanas em {soma_rot-int(num_semanas)}")
+
+    st.markdown("---")
+
     def _servico_form(key_prefix, pl_srv, label, expanded=True):
         """Renderiza formulário de um serviço dentro de um bloco."""
         with st.expander(f"⚙️ {label}", expanded=expanded):
@@ -673,7 +720,8 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
             n_srv_bloco = 1 + st.session_state.get(key_n_srv, 0)
             pl_dur_bloco = pl.get("duracao_por_sg", {})
 
-            default_sem_sg = max(1, int(num_semanas) // max(int(num_locais), 1))
+            # Valor padrão vem do rodízio global configurado acima
+            default_sem_sg = rotacao_semanas[i] if i < len(rotacao_semanas) else max(1, int(num_semanas) // max(int(num_locais), 1))
 
             col_dur1, col_dur2 = st.columns(2)
             with col_dur1:
@@ -686,7 +734,9 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 )
             with col_dur2:
                 sgs_por_srv = max(n_sgs_total // n_srv_bloco, 1) if n_srv_bloco > 0 else n_sgs_total
-                sem_bloco_total = sem_por_sg * n_sgs_total // n_srv_bloco if n_srv_bloco > 0 else sem_por_sg * n_sgs_total
+                # Duração do bloco no calendário = sem_por_sg
+                # (todos os SGs estão no bloco simultaneamente, distribuídos entre os serviços)
+                sem_bloco_total = sem_por_sg
                 if n_srv_bloco > 1:
                     st.info(
                         f"📊 **{sgs_por_srv} SGs simultâneos** por serviço · "
@@ -695,9 +745,9 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                     )
                 else:
                     st.info(
-                        f"📊 **{n_sgs_total} SGs** passam por este bloco · "
+                        f"📊 **{n_sgs_total} SGs simultâneos** neste bloco · "
                         f"cada SG fica **{sem_por_sg} sem** · "
-                        f"duração total: **{sem_bloco_total} semanas**"
+                        f"duração total do bloco: **{sem_bloco_total} semanas**"
                     )
 
             # Gerar duracao_sgs automaticamente
@@ -812,7 +862,7 @@ if st.button("🚀 Gerar Escala com IA", type="primary", use_container_width=Tru
                     srv_copy["bloco"] = nome_bl
                     srv_copy["sgs_responsaveis"] = list(range(1, n_sgs_bloco+1))
                     todos_servicos.append(srv_copy)
-                sem_bloco_cal = sem_sg_bloco * n_sgs_bloco // len(servs)
+                sem_bloco_cal = sem_sg_bloco  # todos os SGs estão no bloco simultaneamente
                 blocos_desc.append(
                     f"Bloco '{nome_bl}' ({' + '.join(nomes)}) — {len(servs)} serviços com RODÍZIO INTERNO:\n"
                     f"  • Cada SG fica {sem_sg_bloco} semanas neste bloco no total\n"

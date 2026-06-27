@@ -548,8 +548,13 @@ def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg, dad
     except: pass
 
     # Calcular horas reais por aluno por semana a partir da escala_detalhada
+    # Com cap diário: máximo de horas por aluno por dia = limite_ch / 5
     from collections import defaultdict
-    horas_calc = defaultdict(lambda: defaultdict(float))  # {nome: {sem_num: horas}}
+    limite_ch_cfg = int(config.get("regras_especiais",{}).get("limite_ch", 40))
+    limite_abs_cfg = int(config.get("regras_especiais",{}).get("limite_abs", 43))
+
+    horas_calc = defaultdict(lambda: defaultdict(float))   # {nome: {sem_num: horas}}
+    horas_dia  = defaultdict(lambda: defaultdict(float))   # {nome: {(sem,data): horas}} — para cap diário
     cind_calc = defaultdict(int)
     fds_enf_calc = defaultdict(int)
     fds_ps_calc = defaultdict(int)
@@ -559,6 +564,7 @@ def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg, dad
         if isinstance(entry.get("nome"), str) and entry.get("nome"):
             alunos = [entry["nome"]]
         sem_num = entry.get("semana", 0)
+        data_key = (int(sem_num), entry.get("data",""))
         horas_entry = entry.get("horas", 0)
         try: horas_entry = float(horas_entry)
         except: horas_entry = 0
@@ -566,6 +572,7 @@ def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg, dad
         local = (entry.get("local","") or "").lower()
         for nome in alunos:
             horas_calc[nome][int(sem_num)] += horas_entry
+            horas_dia[nome][data_key] += horas_entry
             if "cinderela" in turno or turno == "c":
                 cind_calc[nome] += 1
             if "fds" in turno or "★" in turno:
@@ -625,6 +632,18 @@ def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg, dad
     nota = f"CH padrão: {config.get('regras_especiais',{}).get('limite_ch',40)}h/sem | Absoluto: {config.get('regras_especiais',{}).get('limite_abs',43)}h | Vermelho > 43h | Amarelo > 40h"
     _cel(ws, row, 1, nota, halign="left", italic=True, bg="F2F2F2", sz=8, border=False)
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4+n_sem)
+
+    # Aviso de semanas com excesso de horas
+    excedentes = []
+    for nome_exc, sems in horas_calc.items():
+        for sem_exc, h_exc in sems.items():
+            if h_exc > limite_abs_cfg:
+                excedentes.append(f"{nome_exc} (S{sem_exc}: {int(h_exc)}h)")
+    if excedentes:
+        row += 1
+        aviso = f"⚠️ ATENÇÃO — Horas acima do limite ({limite_abs_cfg}h): " + " | ".join(excedentes[:10])
+        _cel(ws, row, 1, aviso, halign="left", italic=True, bg="FFC7CE", sz=8, bold=True, border=False)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4+n_sem)
 
 def _cor_semana_aluno(nome, sem_num, resumo_horas, locais_cfg):
     """Tenta retornar cor do local do aluno naquela semana."""
