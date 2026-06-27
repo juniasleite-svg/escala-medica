@@ -137,38 +137,144 @@ Estrutura obrigatória:
 
 NÃO inclua escala_detalhada nesta resposta — ela será gerada separadamente."""
 
-SYSTEM_DETALHE = """Você é um especialista em escalas de internato médico.
-Com base no briefing e no calendário de rodízio fornecido, gere APENAS a escala_detalhada.
-Responda APENAS com JSON válido, sem texto antes ou depois.
+SYSTEM_DETALHE = ""  # não usado mais — Python preenche os alunos
 
-REGRAS CRÍTICAS — SIGA À RISCA:
 
-1. COBERTURA OBRIGATÓRIA: Para CADA local, gere UMA entrada para CADA turno em CADA dia útil.
-   - Se o local tem Manhã: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
-   - Se o local tem Tarde: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
-   - Se o local tem Cinderela: gere entrada para os dias configurados
-   - NÃO pule nenhum dia sem justificativa explícita de bloqueio
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def _calc_horas(horario_str, default=6):
+    import re as _re
+    m = _re.match(r"(\d+)[h:]?\s*[-–]\s*(\d+)", str(horario_str or ""))
+    if m:
+        h1, h2 = int(m.group(1)), int(m.group(2))
+        diff = (h2 - h1) if h2 >= h1 else (h2 - h1 + 24)
+        return diff if diff > 0 else default
+    return default
 
-2. BLOQUEIOS: Só omita um turno se houver bloqueio explícito no briefing para aquele dia.
-   - "Sem tarde na quinta" → omite APENAS quinta tarde
-   - "Terça tarde 12-16h" → gera tarde de terça com horário reduzido, NÃO omite
-   - NUNCA omita segunda ou terça à tarde sem bloqueio explícito
 
-3. EXCLUSIVIDADE: Um aluno NUNCA aparece em 2 serviços do mesmo bloco no mesmo turno.
+def gerar_escala_detalhada(config, semanas_datas, calendario_rodizio):
+    """
+    Gera a escala_detalhada completa com Python puro.
+    - config: dict com locais, alunos_por_sg, regras_especiais
+    - semanas_datas: lista de listas de datetime.date (7 dias por semana)
+    - calendario_rodizio: lista de {semana, alocacao: {SG1: "NomeBloco/Serviço", ...}}
+    Retorna lista de slots com alunos preenchidos.
+    """
+    import re as _re2
 
-4. FORMATO: 1 entrada por (semana + data + local + turno), todos os alunos do SG.
-   - Datas: DD/MM (ex: "06/07")
-   - horas: duração do turno em horas (manhã 6h, tarde 6h, cinderela 4h)
+    DIAS_UTEIS = {0: "Seg", 1: "Ter", 2: "Qua", 3: "Qui", 4: "Sex"}
+    DIAS_FDS   = {5: "Sáb", 6: "Dom"}
 
-5. VERIFICAÇÃO ANTES DE RESPONDER: Confirme que cada local+turno tem entradas para todos os dias úteis esperados. Se faltar algum, adicione.
+    regras       = config.get("regras_especiais", {})
+    regra_quinta = regras.get("quinta", "")
+    regra_terca  = regras.get("terca", "")
+    quinta_sem_tarde     = "enamed" in regra_quinta.lower() or "sem tarde" in regra_quinta.lower()
+    terca_tarde_reduzida = "reduz" in regra_terca.lower() or "encurt" in regra_terca.lower() or "12-16" in regra_terca
 
-Formato:
-{
-  "escala_detalhada": [
-    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Manhã", "horario": "08-12h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]},
-    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Tarde", "horario": "13-17h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]}
-  ]
-}"""
+    _m = _re2.search(r"\d{1,2}-\d{1,2}h", regra_terca)
+    hor_terca_red = _m.group(0) if _m else "12-16h"
+
+    alunos_por_sg = config.get("alunos_por_sg", {})
+
+    # Monta índice: nome do serviço → lista de SGs que passam por ele
+    # A partir do calendário de rodízio por semana
+    # cal_idx[semana][nome_servico] = [lista de nomes de alunos]
+    cal_idx = {}
+    for entry in calendario_rodizio:
+        sem = int(entry.get("semana", 0))
+        aloc = entry.get("alocacao", {})  # {"SG1": "Enfermaria", "SG2": "PA Mandic", ...}
+        cal_idx[sem] = {}
+        for sg_key, local_nome in aloc.items():
+            # Normaliza chave SG: "SG1" → "1"
+            sg_num = sg_key.replace("SG","").replace("Sg","").strip()
+            nomes = alunos_por_sg.get(sg_num, alunos_por_sg.get(sg_key, []))
+            local_norm = str(local_nome).strip()
+            if local_norm not in cal_idx[sem]:
+                cal_idx[sem][local_norm] = []
+            cal_idx[sem][local_norm].extend(nomes)
+
+    # Expande todos os serviços
+    todos_servicos = []
+    for loc in config.get("locais", []):
+        todos_servicos.append(loc)
+        for srv_extra in loc.get("servicos_extras", []):
+            todos_servicos.append(srv_extra)
+
+    slots = []
+    for s_idx, semana_dias in enumerate(semanas_datas):
+        semana_num = s_idx + 1
+        sem_cal = cal_idx.get(semana_num, {})
+
+        for srv in todos_servicos:
+            nome_srv = srv.get("nome", "").strip()
+            if not nome_srv:
+                continue
+
+            # Encontra alunos para este serviço nesta semana
+            # Tenta match exato, depois parcial
+            alunos_semana = sem_cal.get(nome_srv, [])
+            if not alunos_semana:
+                for cal_key, cal_alunos in sem_cal.items():
+                    if (nome_srv.lower() in cal_key.lower() or
+                        cal_key.lower() in nome_srv.lower()):
+                        alunos_semana = cal_alunos
+                        break
+
+            # Bloqueios do formulário
+            bloqs_m   = {b["dia"] for b in srv.get("bloqueios_manha", []) if b.get("tipo") == "Sem manhã"}
+            bloqs_t   = {b["dia"] for b in srv.get("bloqueios_tarde", []) if b.get("tipo") == "Sem tarde"}
+            hor_red_m = {b["dia"]: b.get("horario","") for b in srv.get("bloqueios_manha", []) if b.get("tipo") == "Hor. reduzido"}
+            hor_red_t = {b["dia"]: b.get("horario","") for b in srv.get("bloqueios_tarde", []) if b.get("tipo") == "Horário reduzido"}
+
+            if quinta_sem_tarde:
+                bloqs_t.add("Qui")
+            if terca_tarde_reduzida and "Ter" not in bloqs_t:
+                hor_red_t["Ter"] = hor_terca_red
+
+            # Dias úteis
+            for dia_idx, data in enumerate(semana_dias[:5]):
+                dia_nome = DIAS_UTEIS[dia_idx]
+                data_str = data.strftime("%d/%m")
+
+                if srv.get("manha") and dia_nome not in bloqs_m:
+                    hor = hor_red_m.get(dia_nome, srv["manha"])
+                    slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
+                                  "local": nome_srv, "turno": "Manhã", "horario": hor,
+                                  "horas": _calc_horas(hor, 6), "alunos": list(alunos_semana)})
+
+                if srv.get("tarde") and dia_nome not in bloqs_t:
+                    hor = hor_red_t.get(dia_nome, srv["tarde"])
+                    turno_nome = "Tarde reduzida" if dia_nome in hor_red_t else "Tarde"
+                    slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
+                                  "local": nome_srv, "turno": turno_nome, "horario": hor,
+                                  "horas": _calc_horas(hor, 6), "alunos": list(alunos_semana)})
+
+                if srv.get("cinderela") and dia_nome in srv.get("dias_cind", []):
+                    hor = srv["cinderela"]
+                    slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
+                                  "local": nome_srv, "turno": "Cinderela", "horario": hor,
+                                  "horas": _calc_horas(hor, 4), "alunos": list(alunos_semana)})
+
+            # FDS
+            if srv.get("fds"):
+                for dia_idx, data in enumerate(semana_dias[5:], start=5):
+                    dia_nome = DIAS_FDS[dia_idx]
+                    data_str = data.strftime("%d/%m")
+                    if srv.get("fds_manha"):
+                        hor = srv["fds_manha"]
+                        slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
+                                      "local": nome_srv, "turno": "Manhã FDS", "horario": hor,
+                                      "horas": _calc_horas(hor, 5), "alunos": list(alunos_semana)})
+                    if srv.get("fds_tarde"):
+                        hor = srv["fds_tarde"]
+                        slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
+                                      "local": nome_srv, "turno": "Tarde FDS", "horario": hor,
+                                      "horas": _calc_horas(hor, 6), "alunos": list(alunos_semana)})
+                    if srv.get("fds_cind"):
+                        hor = srv["fds_cind"]
+                        slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
+                                      "local": nome_srv, "turno": "Cinderela FDS", "horario": hor,
+                                      "horas": _calc_horas(hor, 4), "alunos": list(alunos_semana)})
+    return slots
 
 # ── Mostrar resultado ────────────────────────────────────────────────────────
 def mostrar_resultado(resposta_raw, esp, grupo, turma):
@@ -936,41 +1042,24 @@ Extras: {regras_extras}
             st.session_state.turma_atual = turma
             cal_gerado = json.dumps(dados1.get("calendario_rodizio",[]), ensure_ascii=False)
 
-            with st.spinner("Passo 2/2 — Escala detalhada dia a dia... ⏳"):
-                resp2 = chamar_claude(
-                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário gerado:\n{cal_gerado}\n\nAlunos:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos em TODOS os dias das {num_semanas} semanas."}],
-                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
-                )
+            # ── Passo 2: Python gera escala_detalhada com base no calendário da IA ──
+            with st.spinner("Passo 2/2 — Gerando escala detalhada... ⏳"):
+                semanas_datas = [
+                    [data_inicio + datetime.timedelta(weeks=s, days=d) for d in range(7)]
+                    for s in range(int(num_semanas))
+                ]
+                config_esc = st.session_state.config_atual.copy()
+                config_esc["locais"] = locais
+                cal_rodizio = dados1.get("calendario_rodizio", [])
+                det = gerar_escala_detalhada(config_esc, semanas_datas, cal_rodizio)
 
-            if resp2:
-                dados2 = extrair_json(resp2) or {}
-                det = dados2.get("escala_detalhada", [])
-                if det:
-                    dados1["escala_detalhada"] = det
-
-                    # Validação de cobertura
-                    from collections import defaultdict
-                    cobertura = defaultdict(set)
-                    for e in det:
-                        cobertura[(e.get("local",""), e.get("turno",""))].add(e.get("dia",""))
-
-                    dias_uteis = {"Seg","Ter","Qua","Qui","Sex"}
-                    avisos_cob = []
-                    for (local, turno), dias in cobertura.items():
-                        faltando = dias_uteis - dias
-                        # Remover dias que podem ter bloqueio (qui geralmente tem ENAMED)
-                        faltando_relevante = faltando - {"Qui"}
-                        if faltando_relevante:
-                            avisos_cob.append(f"⚠️ {local} / {turno}: sem cobertura em {', '.join(sorted(faltando_relevante))}")
-
-                    if avisos_cob:
-                        st.warning("**Dias sem cobertura detectados:**\n" + "\n".join(avisos_cob))
-
-                    st.success(f"✅ Escala detalhada: {len(det)} entradas")
-                else:
-                    st.warning("⚠️ Passo 2 não retornou dados. Tente o botão abaixo.")
+            dados1["escala_detalhada"] = det
+            vazios = sum(1 for e in det if not e.get("alunos"))
+            total = len(det)
+            if vazios:
+                st.warning(f"⚠️ {vazios} slots sem alunos (serviço não encontrado no calendário de rodízio). Verifique os nomes dos blocos.")
             else:
-                st.warning("⚠️ Passo 2 falhou (timeout). Tente novamente ou use a correção abaixo.")
+                st.success(f"✅ Escala completa: {total} slots gerados com 100% de cobertura!")
 
             st.session_state.escala_gerada = json.dumps(dados1, ensure_ascii=False)
             st.rerun()
@@ -989,25 +1078,23 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
     if not dados_atual.get("escala_detalhada"):
         st.warning("⚠️ Escala detalhada vazia — as abas Subgrupo e Individual não terão dados.")
         if st.button("🔄 Gerar escala detalhada agora", type="primary"):
-            briefing_atual = st.session_state.get("briefing_atual","")
-            cal = json.dumps(dados_atual.get("calendario_rodizio",[]), ensure_ascii=False)
-            alunos_atual = st.session_state.get("config_atual",{}).get("alunos_por_sg",{})
-            n_sem_atual = st.session_state.get("config_atual",{}).get("num_semanas",8)
-            with st.spinner("Gerando escala detalhada... ⏳"):
-                resp_det = chamar_claude(
-                    [{"role": "user", "content": f"Briefing:\n{briefing_atual}\n\nCalendário:\n{cal}\n\nAlunos:\n{json.dumps(alunos_atual, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos nas {n_sem_atual} semanas."}],
-                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
-                )
-            if resp_det:
-                dados2 = extrair_json(resp_det) or {}
-                det = dados2.get("escala_detalhada", [])
-                if det:
-                    dados_atual["escala_detalhada"] = det
-                    st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
-                    st.success(f"✅ {len(det)} entradas geradas!")
-                    st.rerun()
-                else:
-                    st.error("A IA não retornou dados. Tente novamente.")
+            cfg_fb = st.session_state.get("config_atual", {})
+            try:
+                d0_fb = datetime.date.fromisoformat(cfg_fb.get("data_inicio", str(datetime.date.today())))
+            except:
+                d0_fb = datetime.date.today()
+            n_sem_fb = int(cfg_fb.get("num_semanas", 8))
+            semanas_fb = [[d0_fb + datetime.timedelta(weeks=s, days=d) for d in range(7)] for s in range(n_sem_fb)]
+            cal_fb = dados_atual.get("calendario_rodizio", [])
+            with st.spinner("Gerando escala detalhada..."):
+                det_fb = gerar_escala_detalhada(cfg_fb, semanas_fb, cal_fb)
+            if det_fb:
+                dados_atual["escala_detalhada"] = det_fb
+                st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
+                st.success(f"✅ {len(det_fb)} slots gerados!")
+                st.rerun()
+            else:
+                st.error("Não foi possível gerar. Verifique se o calendário de rodízio foi gerado.")
 
     mostrar_resultado(
         st.session_state.escala_gerada,
