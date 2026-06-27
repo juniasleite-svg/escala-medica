@@ -218,25 +218,141 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
 
 # BLOCO 3 — Locais
 with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
-    num_locais = st.number_input("Número de locais", 2, 6, 3)
+    num_locais = st.number_input("Número de locais", 2, 8, 3)
     locais = []
     for i in range(int(num_locais)):
-        st.markdown(f"**Local {i+1}**")
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            nome_l = st.text_input(f"Nome", key=f"ln_{i}", placeholder="ex: Enfermaria")
-            abrev_l = st.text_input(f"Abreviação", key=f"la_{i}", placeholder="ex: Enf")
-        with col_b:
-            manha_l = st.text_input(f"Horário manhã", key=f"lm_{i}", value="07-13h")
-            tarde_l = st.text_input(f"Horário tarde (vazio=sem tarde)", key=f"lt_{i}", value="12-18h")
-        with col_c:
-            cind_l = st.text_input(f"Cinderela (vazio=sem)", key=f"lc_{i}", placeholder="ex: 19-23h")
-            cov_l = st.number_input(f"Cobertura mínima tarde", 0, 10, 3, key=f"lcov_{i}")
-            fds_l = st.checkbox(f"Tem plantão FDS?", key=f"lfds_{i}")
-        obs_l = st.text_input(f"Obs deste local", key=f"lobs_{i}", placeholder="ex: FDS feito pelos alunos do Amb")
-        locais.append({"nome": nome_l, "abrev": abrev_l, "manha": manha_l, "tarde": tarde_l,
-                       "cinderela": cind_l, "cov_tarde": int(cov_l), "fds": fds_l, "obs": obs_l})
-        st.divider()
+        with st.container():
+            st.markdown(f"### Local {i+1}")
+
+            # Identificação
+            col_a, col_b = st.columns(2)
+            with col_a:
+                nome_l = st.text_input("Nome do local", key=f"ln_{i}", placeholder="ex: Enfermaria")
+                abrev_l = st.text_input("Abreviação", key=f"la_{i}", placeholder="ex: Enf")
+            with col_b:
+                obs_l = st.text_input("Observações", key=f"lobs_{i}", placeholder="ex: FDS feito pelos alunos do Amb")
+                # Opção de unir 2 serviços em 1 bloco
+                unir_servico = st.checkbox("🔗 Unir com outro serviço neste bloco", key=f"lunir_{i}")
+                if unir_servico:
+                    servico2_nome = st.text_input("Nome do 2º serviço", key=f"ln2_{i}", placeholder="ex: PA Mandic")
+                    servico2_obs = st.text_input("Regra do 2º serviço", key=f"lobs2_{i}",
+                        placeholder="ex: PA: máx 2 alunos/turno, M+T+C, FDS")
+                else:
+                    servico2_nome = ""
+                    servico2_obs = ""
+
+            # Tabela de turnos por período
+            st.markdown("**⏰ Configuração de turnos e vagas:**")
+
+            tab_util, tab_fds = st.tabs(["📅 Dias Úteis", "🏖️ Final de Semana"])
+
+            with tab_util:
+                st.caption("Configure cada turno para os dias úteis (Seg–Sex)")
+                col_u1, col_u2, col_u3 = st.columns(3)
+                with col_u1:
+                    st.markdown("**🌅 Manhã**")
+                    tem_manha = st.checkbox("Tem manhã?", value=True, key=f"tm_{i}")
+                    if tem_manha:
+                        hor_manha = st.text_input("Horário", value="07-13h", key=f"hm_{i}")
+                        min_manha = st.number_input("Mín alunos/dia", 0, 20, 0, key=f"mnm_{i}")
+                        max_manha = st.number_input("Máx alunos/dia", 0, 20, 6, key=f"mxm_{i}")
+                    else:
+                        hor_manha, min_manha, max_manha = "", 0, 0
+
+                with col_u2:
+                    st.markdown("**🌇 Tarde**")
+                    tem_tarde = st.checkbox("Tem tarde?", value=True, key=f"tt_{i}")
+                    if tem_tarde:
+                        hor_tarde = st.text_input("Horário normal", value="12-18h", key=f"ht_{i}")
+                        hor_tarde_ter = st.text_input("Horário terça (se diferente)", value="12-16h", key=f"htt_{i}")
+                        hor_tarde_qui = st.text_input("Horário quinta (vazio=sem tarde)", value="", key=f"htq_{i}")
+                        min_tarde = st.number_input("Mín alunos/dia", 0, 20, 3, key=f"mnt_{i}")
+                        max_tarde = st.number_input("Máx alunos/dia", 0, 20, 4, key=f"mxt_{i}")
+                    else:
+                        hor_tarde, hor_tarde_ter, hor_tarde_qui = "", "", ""
+                        min_tarde, max_tarde = 0, 0
+
+                with col_u3:
+                    st.markdown("**🌙 Cinderela**")
+                    tem_cind = st.checkbox("Tem cinderela?", key=f"tc_{i}")
+                    if tem_cind:
+                        hor_cind = st.text_input("Horário", value="19-23h", key=f"hc_{i}")
+                        min_cind = st.number_input("Mín alunos/dia", 0, 10, 0, key=f"mnc_{i}")
+                        max_cind = st.number_input("Máx alunos/dia", 0, 10, 2, key=f"mxc_{i}")
+                        dias_cind = st.multiselect("Dias com cinderela", ["Seg","Ter","Qua","Qui","Sex"],
+                                                    default=["Sex"], key=f"dc_{i}")
+                    else:
+                        hor_cind, min_cind, max_cind, dias_cind = "", 0, 0, []
+
+            with tab_fds:
+                tem_fds = st.checkbox("Tem plantão no FDS?", key=f"lfds_{i}")
+                if tem_fds:
+                    col_f1, col_f2, col_f3 = st.columns(3)
+                    with col_f1:
+                        st.markdown("**🌅 Manhã FDS**")
+                        tem_fds_m = st.checkbox("Tem manhã FDS?", value=True, key=f"tfm_{i}")
+                        if tem_fds_m:
+                            hor_fds_m = st.text_input("Horário", value="07-12h", key=f"hfm_{i}")
+                            min_fds_m = st.number_input("Mín alunos", 0, 10, 1, key=f"mnfm_{i}")
+                            max_fds_m = st.number_input("Máx alunos", 0, 10, 2, key=f"mxfm_{i}")
+                        else:
+                            hor_fds_m, min_fds_m, max_fds_m = "", 0, 0
+                    with col_f2:
+                        st.markdown("**🌇 Tarde FDS**")
+                        tem_fds_t = st.checkbox("Tem tarde FDS?", key=f"tft_{i}")
+                        if tem_fds_t:
+                            hor_fds_t = st.text_input("Horário", value="13-19h", key=f"hft_{i}")
+                            min_fds_t = st.number_input("Mín alunos", 0, 10, 1, key=f"mnft_{i}")
+                            max_fds_t = st.number_input("Máx alunos", 0, 10, 2, key=f"mxft_{i}")
+                        else:
+                            hor_fds_t, min_fds_t, max_fds_t = "", 0, 0
+                    with col_f3:
+                        st.markdown("**🌙 Cinderela FDS**")
+                        tem_fds_c = st.checkbox("Tem cinderela FDS?", key=f"tfc_{i}")
+                        if tem_fds_c:
+                            hor_fds_c = st.text_input("Horário", value="19-23h", key=f"hfc_{i}")
+                            min_fds_c = st.number_input("Mín alunos", 0, 10, 0, key=f"mnfc_{i}")
+                            max_fds_c = st.number_input("Máx alunos", 0, 10, 2, key=f"mxfc_{i}")
+                        else:
+                            hor_fds_c, min_fds_c, max_fds_c = "", 0, 0
+
+                    quem_faz_fds = st.text_input("Quem faz o FDS deste local?",
+                        key=f"lfdsquem_{i}", placeholder="ex: alunos do Ambulatório | alunos do próprio local")
+                    compensacao_fds = st.text_input("Compensação por FDS?",
+                        key=f"lfdscomp_{i}", placeholder="ex: perde 1 tarde do Amb | nenhuma")
+                else:
+                    tem_fds_m = tem_fds_t = tem_fds_c = False
+                    hor_fds_m = hor_fds_t = hor_fds_c = ""
+                    min_fds_m = max_fds_m = min_fds_t = max_fds_t = min_fds_c = max_fds_c = 0
+                    quem_faz_fds = compensacao_fds = ""
+
+            locais.append({
+                "nome": nome_l, "abrev": abrev_l, "obs": obs_l,
+                "servico2": servico2_nome, "servico2_obs": servico2_obs,
+                # Dias úteis
+                "manha": hor_manha if tem_manha else "",
+                "min_manha": int(min_manha), "max_manha": int(max_manha),
+                "tarde": hor_tarde if tem_tarde else "",
+                "tarde_terca": hor_tarde_ter if tem_tarde else "",
+                "tarde_quinta": hor_tarde_qui if tem_tarde else "",
+                "min_tarde": int(min_tarde), "max_tarde": int(max_tarde),
+                "cinderela": hor_cind if tem_cind else "",
+                "min_cind": int(min_cind), "max_cind": int(max_cind),
+                "dias_cind": dias_cind,
+                # FDS
+                "fds": tem_fds,
+                "fds_manha": hor_fds_m if tem_fds_m else "",
+                "fds_min_manha": int(min_fds_m), "fds_max_manha": int(max_fds_m),
+                "fds_tarde": hor_fds_t if tem_fds_t else "",
+                "fds_min_tarde": int(min_fds_t), "fds_max_tarde": int(max_fds_t),
+                "fds_cind": hor_fds_c if tem_fds_c else "",
+                "fds_min_cind": int(min_fds_c), "fds_max_cind": int(max_fds_c),
+                "fds_quem": quem_faz_fds, "fds_comp": compensacao_fds,
+                # Compatibilidade com gerador
+                "cov_tarde": int(min_tarde),
+            })
+            st.divider()
+
 
 # BLOCO 4 — Rodízio
 with st.expander("🔄 Bloco 4 — Tabela de Rodízio", expanded=True):
