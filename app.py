@@ -264,13 +264,28 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
                     tem_tarde = st.checkbox("Tem tarde?", value=True, key=f"tt_{i}")
                     if tem_tarde:
                         hor_tarde = st.text_input("Horário normal", value="12-18h", key=f"ht_{i}")
-                        hor_tarde_ter = st.text_input("Horário terça (se diferente)", value="12-16h", key=f"htt_{i}")
-                        hor_tarde_qui = st.text_input("Horário quinta (vazio=sem tarde)", value="", key=f"htq_{i}")
                         min_tarde = st.number_input("Mín alunos/dia", 0, 20, 3, key=f"mnt_{i}")
                         max_tarde = st.number_input("Máx alunos/dia", 0, 20, 4, key=f"mxt_{i}")
+                        st.markdown("**🚫 Bloqueios de tarde:**")
+                        num_bloq = st.number_input("Quantos bloqueios?", 0, 5, 1, key=f"nbloq_{i}")
+                        bloqueios_tarde = []
+                        for b in range(int(num_bloq)):
+                            col_b1, col_b2, col_b3 = st.columns(3)
+                            with col_b1:
+                                dias_op = ["Seg","Ter","Qua","Qui","Sex"]
+                                def_idx = 3 if b==0 else (1 if b==1 else 0)
+                                dia_bloq = st.selectbox("Dia", dias_op, key=f"dbloq_{i}_{b}", index=def_idx)
+                            with col_b2:
+                                tipo_bloq = st.selectbox("Tipo", ["Sem tarde","Horário reduzido"], key=f"tbloq_{i}_{b}")
+                            with col_b3:
+                                hor_bloq = st.text_input("Horário (se reduzido)", value="12-16h", key=f"hbloq_{i}_{b}") if tipo_bloq=="Horário reduzido" else ""
+                            bloqueios_tarde.append({"dia": dia_bloq, "tipo": tipo_bloq, "horario": hor_bloq})
+                        hor_tarde_ter = ""
+                        hor_tarde_qui = ""
                     else:
                         hor_tarde, hor_tarde_ter, hor_tarde_qui = "", "", ""
                         min_tarde, max_tarde = 0, 0
+                        bloqueios_tarde = []
 
                 with col_u3:
                     st.markdown("**🌙 Cinderela**")
@@ -333,8 +348,7 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
                 "manha": hor_manha if tem_manha else "",
                 "min_manha": int(min_manha), "max_manha": int(max_manha),
                 "tarde": hor_tarde if tem_tarde else "",
-                "tarde_terca": hor_tarde_ter if tem_tarde else "",
-                "tarde_quinta": hor_tarde_qui if tem_tarde else "",
+                "bloqueios_tarde": bloqueios_tarde if tem_tarde else [],
                 "min_tarde": int(min_tarde), "max_tarde": int(max_tarde),
                 "cinderela": hor_cind if tem_cind else "",
                 "min_cind": int(min_cind), "max_cind": int(max_cind),
@@ -356,12 +370,99 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
 
 # BLOCO 4 — Rodízio
 with st.expander("🔄 Bloco 4 — Tabela de Rodízio", expanded=True):
-    st.caption("Descreva ou cole a tabela de rodízio. Ex: Par SG1+SG2 → Enf S1-3, PS S4-5, Amb S6-8")
-    rodizio_desc = st.text_area("Tabela de rodízio (descreva livremente ou cole a tabela)",
-        height=120, placeholder="""Ex:
+
+    def gerar_sugestoes_rodizio(n_sg, n_locais, n_semanas, nomes_locais):
+        """Gera sugestões de rodízio baseadas nos parâmetros."""
+        sugestoes = []
+        sgs = list(range(1, n_sg + 1))
+        locs = nomes_locais if nomes_locais else [f"Local{j+1}" for j in range(n_locais)]
+
+        # Sugestão 1: Rodízio por pares (se n_sg par e divisível em grupos iguais ao n_locais)
+        if n_sg % n_locais == 0:
+            tam_par = n_sg // n_locais
+            sems_por_loc = n_semanas // n_locais
+            resto = n_semanas % n_locais
+            linhas = []
+            for p in range(n_locais):
+                sgs_par = sgs[p*tam_par:(p+1)*tam_par]
+                sg_label = "+".join([f"SG{s}" for s in sgs_par])
+                rotacao = []
+                sem_atual = 1
+                for j in range(n_locais):
+                    loc_idx = (p + j) % n_locais
+                    qtd = sems_por_loc + (1 if j < resto else 0)
+                    sem_fim = sem_atual + qtd - 1
+                    rotacao.append(f"{locs[loc_idx]} S{sem_atual}-{sem_fim}")
+                    sem_atual += qtd
+                linhas.append(f"Par{p+1} = {sg_label}: {' → '.join(rotacao)}")
+            sugestoes.append({
+                "nome": f"🔄 Rodízio por pares ({n_locais} pares, {sems_por_loc}{'–'+str(sems_por_loc+1) if resto else ''} sem/local)",
+                "texto": "\n".join(linhas)
+            })
+
+        # Sugestão 2: Rodízio individual (1 SG por local por semana, rotação simples)
+        if n_sg >= n_locais:
+            linhas = []
+            for sg in sgs:
+                rotacao = []
+                sem_atual = 1
+                sems_por_loc2 = n_semanas // n_locais
+                resto2 = n_semanas % n_locais
+                for j in range(n_locais):
+                    loc_idx = (sg - 1 + j) % n_locais
+                    qtd = sems_por_loc2 + (1 if j < resto2 else 0)
+                    sem_fim = sem_atual + qtd - 1
+                    rotacao.append(f"{locs[loc_idx]} S{sem_atual}-{sem_fim}")
+                    sem_atual += qtd
+                linhas.append(f"SG{sg}: {' → '.join(rotacao)}")
+            sugestoes.append({
+                "nome": f"🔄 Rodízio individual (cada SG faz todos os locais)",
+                "texto": "\n".join(linhas)
+            })
+
+        # Sugestão 3: Rodízio semanal (1 SG por local por semana — estilo Cirurgia)
+        if n_sg == n_locais or n_sg % n_locais == 0:
+            linhas = [f"Semana {s}: " + " | ".join([
+                f"SG{((sg-1+s-1)%n_sg)+1}→{locs[j % n_locais]}"
+                for j, sg in enumerate(range(1, min(n_locais+1, n_sg+1)))
+            ]) for s in range(1, n_semanas+1)]
+            sugestoes.append({
+                "nome": f"📅 Rotação semanal (estilo Cirurgia — 1 SG/local/semana)",
+                "texto": "\n".join(linhas[:4]) + ("\n..." if n_semanas > 4 else "")
+            })
+
+        return sugestoes
+
+    # Gerar sugestões com base nos dados já preenchidos
+    nomes_locais_atual = [l.get("nome","") for l in locais] if locais else []
+    n_sg_atual = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
+    n_locais_atual = int(num_locais)
+    n_semanas_atual = int(num_semanas)
+
+    if st.button("💡 Sugerir rodízio automaticamente", use_container_width=True):
+        sugestoes = gerar_sugestoes_rodizio(n_sg_atual, n_locais_atual, n_semanas_atual, nomes_locais_atual)
+        st.session_state.sugestoes_rodizio = sugestoes
+
+    if "sugestoes_rodizio" in st.session_state and st.session_state.sugestoes_rodizio:
+        st.markdown("**Escolha uma sugestão:**")
+        for idx, sug in enumerate(st.session_state.sugestoes_rodizio):
+            with st.expander(sug["nome"], expanded=(idx==0)):
+                st.code(sug["texto"], language=None)
+                if st.button(f"✅ Usar esta sugestão", key=f"usar_sug_{idx}"):
+                    st.session_state.rodizio_escolhido = sug["texto"]
+                    st.success("Sugestão aplicada! ✓")
+
+    # Campo de texto — pré-preenchido se sugestão foi escolhida
+    rodizio_default = st.session_state.get("rodizio_escolhido", "")
+    rodizio_desc = st.text_area(
+        "Tabela de rodízio (edite à vontade ou descreva livremente)",
+        value=rodizio_default,
+        height=150,
+        placeholder="""Ex:
 Par1 = SG1+SG2: Enf semanas 1-3 → PS semanas 4-5 → Amb semanas 6-8
 Par2 = SG3+SG4: PS semanas 1-3 → Amb semanas 4-5 → Enf semanas 6-8
-Par3 = SG5+SG6: Amb semanas 1-3 → Enf semanas 4-5 → PS semanas 6-8""")
+Par3 = SG5+SG6: Amb semanas 1-3 → Enf semanas 4-5 → PS semanas 6-8"""
+    )
 
 # BLOCO 5 — Regras especiais
 with st.expander("⚙️ Bloco 5 — Regras Especiais", expanded=True):
@@ -483,17 +584,67 @@ Responda em JSON com esta estrutura exata:
                     "pares": [], "blocos": [],
                 }
 
+def _extrair_json(texto):
+    """Extrai JSON de uma resposta que pode conter texto, comentários e markdown."""
+    import re
+
+    # 1. Tentar extrair bloco ```json ... ```
+    match = re.search(r'```json\s*([\s\S]*?)\s*```', texto)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except: pass
+
+    # 2. Tentar extrair qualquer bloco ``` ... ```
+    match = re.search(r'```\s*([\s\S]*?)\s*```', texto)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except: pass
+
+    # 3. Remover comentários de linha (// ...) que a IA às vezes adiciona
+    linhas = []
+    for linha in texto.split('\n'):
+        stripped = linha.strip()
+        if not stripped.startswith('//') and not stripped.startswith('#'):
+            linhas.append(linha)
+    txt_limpo = '\n'.join(linhas)
+
+    # 4. Encontrar o maior objeto JSON válido no texto
+    # Procura pelo primeiro { e tenta parsear progressivamente
+    inicio = txt_limpo.find('{')
+    if inicio >= 0:
+        # Tenta do início até o fim
+        try:
+            return json.loads(txt_limpo[inicio:])
+        except: pass
+
+        # Tenta encontrar o fechamento correto contando chaves
+        depth = 0
+        for i, ch in enumerate(txt_limpo[inicio:]):
+            if ch == '{': depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(txt_limpo[inicio:inicio+i+1])
+                    except: pass
+
+    # 5. Última tentativa: remover tudo antes do primeiro { e depois do último }
+    try:
+        start = texto.index('{')
+        end = texto.rindex('}') + 1
+        return json.loads(texto[start:end])
+    except: pass
+
+    return None
+
 def _mostrar_resultado(resposta_raw, esp, grupo, turma):
     """Mostra o resultado da IA e oferece download."""
     try:
-        txt = resposta_raw.strip()
-        if "```" in txt:
-            partes = txt.split("```")
-            for p in partes:
-                if p.startswith("json"): txt = p[4:]; break
-                elif "{" in p: txt = p; break
-
-        dados = json.loads(txt)
+        dados = _extrair_json(resposta_raw)
+        if dados is None:
+            raise json.JSONDecodeError("Não encontrou JSON válido", resposta_raw, 0)
 
         # Confirmação
         if dados.get("confirmacao"):
