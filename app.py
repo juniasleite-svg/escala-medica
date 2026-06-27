@@ -307,10 +307,11 @@ if modo == "📂 Importar escala existente e modificar":
     if arquivo_escala:
         if st.button("🤖 Analisar e preencher formulário com IA", type="primary", use_container_width=True):
             with st.spinner("Lendo e interpretando sua escala..."):
-                xls = pd.ExcelFile(arquivo_escala, engine="openpyxl")
+                _bytes_escala = arquivo_escala.read()
+                xls = pd.ExcelFile(io.BytesIO(_bytes_escala), engine="openpyxl")
                 conteudo = ""
                 for sheet in xls.sheet_names:
-                    df = pd.read_excel(arquivo_escala, engine="openpyxl", sheet_name=sheet, header=None)
+                    df = pd.read_excel(io.BytesIO(_bytes_escala), engine="openpyxl", sheet_name=sheet, header=None)
                     conteudo += f"\n\n=== ABA: {sheet} ===\n{df.fillna('').to_string(index=False, header=False)}"
                     if len(conteudo) > 12000:
                         conteudo = conteudo[:12000] + "\n...[truncado]"
@@ -431,12 +432,13 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
                 if opcao_sg != "Manter atual" and st.button("🔄 Recarregar da planilha"):
                     try:
                         n_alvo = int(opcao_sg.split()[0])
-                        xls_a = pd.ExcelFile(arquivo_alunos, engine="openpyxl")
+                        _bytes_alunos_imp = arquivo_alunos.read()
+                        xls_a = pd.ExcelFile(io.BytesIO(_bytes_alunos_imp), engine="openpyxl")
                         sheets_g = [s for s in xls_a.sheet_names if "GRUPO" in s.upper()]
                         gp = pf.get("grupo","").upper().replace("GRUPO","").strip()
                         sh = next((s for s in sheets_g if gp in s.upper()), sheets_g[0] if sheets_g else None)
                         if sh:
-                            df_r = pd.read_excel(arquivo_alunos, engine="openpyxl", sheet_name=sh)
+                            df_r = pd.read_excel(io.BytesIO(_bytes_alunos_imp), engine="openpyxl", sheet_name=sh)
                             if "OPÇÃO" in df_r.columns:
                                 op = next((o for o in df_r["OPÇÃO"].dropna().unique() if f"{n_alvo} SG" in str(o)), None)
                                 if op:
@@ -453,11 +455,12 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
 
     elif arquivo_alunos:
         try:
-            xls2 = pd.ExcelFile(arquivo_alunos, engine="openpyxl")
+            _bytes_alunos2 = arquivo_alunos.read()
+            xls2 = pd.ExcelFile(io.BytesIO(_bytes_alunos2), engine="openpyxl")
             grupos_disp = [s for s in xls2.sheet_names if "GRUPO" in s.upper()]
             grupo_sel = st.selectbox("Selecione o grupo", grupos_disp) if grupos_disp else None
             if grupo_sel:
-                df_g = pd.read_excel(arquivo_alunos, engine="openpyxl", sheet_name=grupo_sel)
+                df_g = pd.read_excel(io.BytesIO(_bytes_alunos2), engine="openpyxl", sheet_name=grupo_sel)
                 if "OPÇÃO" in df_g.columns:
                     opcoes = df_g["OPÇÃO"].dropna().unique()
                     opcao_sel = st.selectbox("Opção de subgrupos", opcoes)
