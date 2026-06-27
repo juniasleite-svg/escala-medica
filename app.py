@@ -490,9 +490,45 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
                 with col_u1:
                     st.markdown("**🌅 Manhã**")
                     tem_m = st.checkbox("Tem manhã?", value=bool(pl.get("manha","07-13h")), key=f"tm_{i}")
-                    hor_m = st.text_input("Horário", value=pl.get("manha","07-13h"), key=f"hm_{i}") if tem_m else ""
-                    min_m = st.number_input("Mín/dia", 0, 20, int(pl.get("min_manha",0)), key=f"mnm_{i}") if tem_m else 0
-                    max_m = st.number_input("Máx/dia", 0, 20, int(pl.get("max_manha",6)), key=f"mxm_{i}") if tem_m else 0
+                    if tem_m:
+                        hor_m = st.text_input("Horário", value=pl.get("manha","07-13h"), key=f"hm_{i}")
+                        min_m = st.number_input("Mín/dia", 0, 20, int(pl.get("min_manha",0)), key=f"mnm_{i}")
+                        max_m = st.number_input("Máx/dia", 0, 20, int(pl.get("max_manha",6)), key=f"mxm_{i}")
+                        st.markdown("**🚫 Bloqueios:**")
+                        key_bloqs_m = f"bloqs_m_{i}"
+                        if key_bloqs_m not in st.session_state:
+                            st.session_state[key_bloqs_m] = pl.get("bloqueios_manha", [])
+                        col_bma, col_bmb = st.columns(2)
+                        with col_bma:
+                            if st.button("➕ Adicionar", key=f"add_bm_{i}"):
+                                st.session_state[key_bloqs_m].append({"dia":"Qui","tipo":"Sem manhã","horario":""})
+                                st.rerun()
+                        with col_bmb:
+                            if st.session_state[key_bloqs_m] and st.button("🗑️ Limpar", key=f"clr_bm_{i}"):
+                                st.session_state[key_bloqs_m] = []
+                                st.rerun()
+                        if not st.session_state[key_bloqs_m]:
+                            st.caption("Sem bloqueios — manhã em todos os dias úteis.")
+                        bloqueios_m_list = []
+                        dias_op_m = ["Seg","Ter","Qua","Qui","Sex"]
+                        for b, bloq in enumerate(st.session_state[key_bloqs_m]):
+                            bm1,bm2,bm3,bm4 = st.columns([2,2,2,1])
+                            with bm1:
+                                idx_d = dias_op_m.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op_m else 3
+                                d_bm = st.selectbox("Dia", dias_op_m, index=idx_d, key=f"dbloqm_{i}_{b}")
+                            with bm2:
+                                t_bm = st.selectbox("Tipo", ["Sem manhã","Horário reduzido"],
+                                    index=1 if bloq.get("tipo")=="Horário reduzido" else 0, key=f"tbloqm_{i}_{b}")
+                            with bm3:
+                                h_bm = st.text_input("Horário", value=bloq.get("horario","07-08h"), key=f"hbloqm_{i}_{b}") if t_bm=="Horário reduzido" else ""
+                                if t_bm != "Horário reduzido": st.text_input("—", disabled=True, key=f"hbloqm_{i}_{b}")
+                            with bm4:
+                                st.write("")
+                                if st.button("❌", key=f"del_bm_{i}_{b}"):
+                                    st.session_state[key_bloqs_m].pop(b); st.rerun()
+                            bloqueios_m_list.append({"dia":d_bm,"tipo":t_bm,"horario":h_bm})
+                    else:
+                        hor_m, min_m, max_m, bloqueios_m_list = "", 0, 0, []
 
                 with col_u2:
                     st.markdown("**🌇 Tarde**")
@@ -586,6 +622,7 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
                 "servico2": s2_nome, "servico2_obs": s2_obs,
                 "duracao_por_sg": duracao_sgs,
                 "manha": hor_m if tem_m else "", "min_manha": int(min_m), "max_manha": int(max_m),
+                "bloqueios_manha": bloqueios_m_list,
                 "tarde": hor_t if tem_t else "", "min_tarde": int(min_t), "max_tarde": int(max_t),
                 "bloqueios_tarde": bloqueios_t,
                 "cinderela": hor_c if tem_c else "", "min_cind": int(min_c), "max_cind": int(max_c), "dias_cind": dias_c,
