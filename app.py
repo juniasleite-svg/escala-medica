@@ -112,11 +112,17 @@ SYSTEM_GERAR = """Você é um especialista em escalas de internato médico.
 Gere a escala seguindo EXATAMENTE as regras do briefing.
 Responda APENAS com JSON válido, sem texto antes ou depois, sem comentários //.
 
+REGRAS FUNDAMENTAIS:
+1. EXCLUSIVIDADE POR BLOCO: Cada bloco de rodízio pode ter vários serviços (ex: Bloco BP = Enf + PA Mandic). Um aluno SÓ pode estar em UM serviço do bloco por vez — nunca em dois serviços do mesmo bloco simultaneamente no mesmo dia/turno.
+2. RODÍZIO INTERNO: Se o bloco tem 2 serviços e 4 SGs, 2 SGs vão ao Serviço 1 e 2 SGs vão ao Serviço 2. Eles NÃO se misturam no mesmo turno.
+3. CH SEMANAL: Respeite os limites de carga horária definidos no briefing.
+4. BLOQUEIOS: Aplique todos os bloqueios de manhã, tarde e FDS conforme configurado.
+
 Estrutura obrigatória:
 {
-  "confirmacao": "resumo em 2 frases",
+  "confirmacao": "resumo em 2 frases de como entendeu o rodízio e a distribuição",
   "calendario_rodizio": [
-    {"semana": 1, "periodo": "06/07-12/07", "alocacao": {"SG1": "Enf", "SG2": "PS"}}
+    {"semana": 1, "periodo": "06/07-12/07", "alocacao": {"SG1": "Bloco1-Srv1", "SG2": "Bloco1-Srv2", "SG3": "Bloco2"}}
   ],
   "resumo_horas": [
     {"sg": 1, "nome": "Nome Completo", "ra": "", "total_horas": 40, "semanas": [40,40,40,40,40,40,40,40], "plantoes_enf_fds": 1, "plantoes_ps_fds": 4, "cinderelas": 0}
@@ -130,16 +136,32 @@ SYSTEM_DETALHE = """Você é um especialista em escalas de internato médico.
 Com base no briefing e no calendário de rodízio fornecido, gere APENAS a escala_detalhada.
 Responda APENAS com JSON válido, sem texto antes ou depois.
 
-REGRAS CRÍTICAS:
-- Gere UMA entrada por (semana + data + local + turno), listando TODOS os alunos do SG no campo "alunos"
-- Cubra TODOS os dias úteis (Seg-Sex) das 8 semanas + FDS quando houver plantão
-- Datas no formato DD/MM (ex: "06/07")
-- NÃO crie linha por aluno — 1 linha por turno com todos os alunos
+REGRAS CRÍTICAS — SIGA À RISCA:
 
-Formato obrigatório:
+1. COBERTURA OBRIGATÓRIA: Para CADA local, gere UMA entrada para CADA turno em CADA dia útil.
+   - Se o local tem Manhã: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
+   - Se o local tem Tarde: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
+   - Se o local tem Cinderela: gere entrada para os dias configurados
+   - NÃO pule nenhum dia sem justificativa explícita de bloqueio
+
+2. BLOQUEIOS: Só omita um turno se houver bloqueio explícito no briefing para aquele dia.
+   - "Sem tarde na quinta" → omite APENAS quinta tarde
+   - "Terça tarde 12-16h" → gera tarde de terça com horário reduzido, NÃO omite
+   - NUNCA omita segunda ou terça à tarde sem bloqueio explícito
+
+3. EXCLUSIVIDADE: Um aluno NUNCA aparece em 2 serviços do mesmo bloco no mesmo turno.
+
+4. FORMATO: 1 entrada por (semana + data + local + turno), todos os alunos do SG.
+   - Datas: DD/MM (ex: "06/07")
+   - horas: duração do turno em horas (manhã 6h, tarde 6h, cinderela 4h)
+
+5. VERIFICAÇÃO ANTES DE RESPONDER: Confirme que cada local+turno tem entradas para todos os dias úteis esperados. Se faltar algum, adicione.
+
+Formato:
 {
   "escala_detalhada": [
-    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enf", "turno": "Manhã", "horario": "07-13h", "horas": 6, "sg": 1, "alunos": ["Nome1","Nome2","Nome3"]}
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Manhã", "horario": "08-12h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]},
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Tarde", "horario": "13-17h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]}
   ]
 }"""
 
@@ -601,15 +623,27 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
         pl = pf_locais[i] if i < len(pf_locais) else {}
         with st.container():
             st.markdown(f"---")
-            st.markdown(f"## 🏥 Bloco {i+1}")
+
+            # Nome do bloco
+            col_bloco_a, col_bloco_b = st.columns([2,3])
+            with col_bloco_a:
+                nome_bloco = st.text_input(
+                    f"Nome do Bloco {i+1}",
+                    value=pl.get("nome_bloco", pl.get("nome", f"Bloco {i+1}")),
+                    key=f"nome_bloco_{i}",
+                    placeholder=f"ex: BP | Ambulatório | SC Limeira"
+                )
+            with col_bloco_b:
+                st.markdown(f"## 🏥 {nome_bloco or f'Bloco {i+1}'}")
 
             # Serviço principal
-            srv_principal = _servico_form(f"b{i}_s0", pl, f"Serviço 1 do Bloco {i+1}", expanded=True)
+            n_srv_preview = 1 + st.session_state.get(f"n_srv_{i}", 0)
+            label_s0 = f"Serviço 1 de {nome_bloco}" if nome_bloco else f"Serviço 1 do Bloco {i+1}"
+            srv_principal = _servico_form(f"b{i}_s0", pl, label_s0, expanded=True)
 
             # Serviços adicionais
             key_n_srv = f"n_srv_{i}"
             if key_n_srv not in st.session_state:
-                # Pré-preencher com serviços importados
                 n_srv_def = len(pl.get("servicos_extras", [])) if pl.get("servicos_extras") else 0
                 if pl.get("servico2"): n_srv_def = max(n_srv_def, 1)
                 st.session_state[key_n_srv] = n_srv_def
@@ -621,12 +655,13 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                     pl_extra = pl.get("servico2_cfg", {"nome": pl.get("servico2",""), "obs": pl.get("servico2_obs","")})
                 elif j < len(pl.get("servicos_extras",[])):
                     pl_extra = pl["servicos_extras"][j]
-                srv_extra = _servico_form(f"b{i}_s{j+1}", pl_extra, f"Serviço {j+2} do Bloco {i+1}", expanded=False)
+                label_sj = f"Serviço {j+2} de {nome_bloco}" if nome_bloco else f"Serviço {j+2} do Bloco {i+1}"
+                srv_extra = _servico_form(f"b{i}_s{j+1}", pl_extra, label_sj, expanded=False)
                 srv_extras.append(srv_extra)
                 if st.button(f"❌ Remover Serviço {j+2}", key=f"rm_srv_{i}_{j}"):
                     st.session_state[key_n_srv] -= 1; st.rerun()
 
-            if st.button(f"➕ Adicionar serviço ao Bloco {i+1}", key=f"add_srv_{i}"):
+            if st.button(f"➕ Adicionar serviço a {nome_bloco or f'Bloco {i+1}'}", key=f"add_srv_{i}"):
                 st.session_state[key_n_srv] += 1; st.rerun()
 
             # Duração e distribuição de SGs no nível do BLOCO
@@ -665,7 +700,8 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
             if srv_extras:
                 bloco_nome = f"{srv_principal['nome']} + " + " + ".join([s["nome"] for s in srv_extras if s["nome"]])
             srv_principal["servicos_extras"] = srv_extras
-            srv_principal["nome_bloco"] = bloco_nome
+            srv_principal["nome_bloco"] = nome_bloco
+            bloco_nome = nome_bloco or srv_principal["nome"]
             locais.append(srv_principal)
 
 # BLOCO 4 — Rodízio
@@ -741,31 +777,72 @@ if st.button("🚀 Gerar Escala com IA", type="primary", use_container_width=Tru
     elif not rodizio_desc:
         st.error("Descreva o rodízio!")
     else:
+        # Montar lista expandida de todos os serviços (incluindo vinculados)
+        todos_servicos = []
+        blocos_desc = []
+        for idx_loc, loc in enumerate(locais):
+            servs = [loc] + loc.get("servicos_extras", [])
+            n_sgs_bloco = len(alunos_por_sg)
+            sgs_por_srv = max(n_sgs_bloco // len(servs), 1) if servs else n_sgs_bloco
+            nome_bl = loc.get("nome_bloco") or loc.get("nome","") or f"Bloco {idx_loc+1}"
+
+            if len(servs) > 1:
+                nomes = [s.get("nome","?") for s in servs]
+                # Distribuir SGs pelos serviços
+                sgs_list = list(alunos_por_sg.keys())
+                srv_desc_list = []
+                for j, srv in enumerate(servs):
+                    sg_inicio = j * sgs_por_srv + 1
+                    sg_fim = min((j+1) * sgs_por_srv, n_sgs_bloco)
+                    sgs_srv = f"SG{sg_inicio}" if sg_inicio == sg_fim else f"SG{sg_inicio}-SG{sg_fim}"
+                    srv_desc_list.append(f"  - {srv.get('nome','?')} → recebe {sgs_srv} ({sgs_por_srv} SGs)")
+                    # Adicionar à lista de serviços com nome explícito
+                    srv_copy = dict(srv)
+                    srv_copy["bloco"] = nome_bl
+                    srv_copy["sgs_responsaveis"] = list(range(sg_inicio, sg_fim+1))
+                    todos_servicos.append(srv_copy)
+                blocos_desc.append(
+                    f"Bloco '{nome_bl}' ({' + '.join(nomes)}) — {len(servs)} serviços EXCLUSIVOS:\n" +
+                    "\n".join(srv_desc_list) +
+                    f"\n  ⚠️ NUNCA coloque o mesmo aluno em 2 serviços deste bloco simultaneamente"
+                )
+            else:
+                srv_copy = dict(loc)
+                srv_copy["bloco"] = nome_bl
+                srv_copy["sgs_responsaveis"] = list(range(1, n_sgs_bloco+1))
+                todos_servicos.append(srv_copy)
+                blocos_desc.append(f"Bloco '{nome_bl}': {loc.get('nome','?')} — serviço único")
+
         briefing = f"""
 # BRIEFING DE ESCALA MÉDICA
 
-## BLOCO 1
+## IDENTIFICAÇÃO
 Especialidade: {especialidade} | Ano: {ano_curso} | Turma: {turma} | Grupo: {grupo}
 Início: {data_inicio} | Semanas: {num_semanas}
 
-## BLOCO 2 — ALUNOS
+## ALUNOS POR SUBGRUPO
 {json.dumps(alunos_por_sg, ensure_ascii=False, indent=2)}
 
-## BLOCO 3 — LOCAIS
-{json.dumps(locais, ensure_ascii=False, indent=2)}
+## ESTRUTURA DE BLOCOS E SERVIÇOS
+{chr(10).join(blocos_desc)}
 
-## BLOCO 4 — RODÍZIO
+## REGRA FUNDAMENTAL DE EXCLUSIVIDADE
+Quando um bloco tem múltiplos serviços, os SGs são DIVIDIDOS entre eles.
+Cada SG vai para UM e apenas UM serviço por vez.
+Na escala_detalhada, use o nome EXATO de cada serviço como "local" (ex: "BP-Enfermaria" e "PA Mandic" como locais distintos, NUNCA juntos para o mesmo aluno no mesmo turno).
+
+## DETALHES DE CADA SERVIÇO
+{json.dumps(todos_servicos, ensure_ascii=False, indent=2)}
+
+## RODÍZIO
 {rodizio_desc}
 
-## BLOCO 5 — REGRAS
+## REGRAS ESPECIAIS
 Quinta: {regra_quinta}
 Terça: {regra_terca}
-Limite CH: {limite_ch}h | Absoluto: {limite_abs}h
+Limite CH: {limite_ch}h/sem | Absoluto: {limite_abs}h
 FDS: {regra_fds}
 Extras: {regras_extras}
-
-## BLOCO 6 — EXCEL
-Abas: {', '.join(abas_excel)}
 """
         st.session_state.briefing_atual = briefing
         st.session_state.config_atual = {
@@ -801,9 +878,28 @@ Abas: {', '.join(abas_excel)}
                 det = dados2.get("escala_detalhada", [])
                 if det:
                     dados1["escala_detalhada"] = det
-                    st.success(f"✅ Escala detalhada gerada: {len(det)} entradas")
+
+                    # Validação de cobertura
+                    from collections import defaultdict
+                    cobertura = defaultdict(set)
+                    for e in det:
+                        cobertura[(e.get("local",""), e.get("turno",""))].add(e.get("dia",""))
+
+                    dias_uteis = {"Seg","Ter","Qua","Qui","Sex"}
+                    avisos_cob = []
+                    for (local, turno), dias in cobertura.items():
+                        faltando = dias_uteis - dias
+                        # Remover dias que podem ter bloqueio (qui geralmente tem ENAMED)
+                        faltando_relevante = faltando - {"Qui"}
+                        if faltando_relevante:
+                            avisos_cob.append(f"⚠️ {local} / {turno}: sem cobertura em {', '.join(sorted(faltando_relevante))}")
+
+                    if avisos_cob:
+                        st.warning("**Dias sem cobertura detectados:**\n" + "\n".join(avisos_cob))
+
+                    st.success(f"✅ Escala detalhada: {len(det)} entradas")
                 else:
-                    st.warning("⚠️ Passo 2 não retornou escala detalhada. As abas Subgrupo e Individual ficarão vazias.")
+                    st.warning("⚠️ Passo 2 não retornou dados. Tente o botão abaixo.")
             else:
                 st.warning("⚠️ Passo 2 falhou (timeout). Tente novamente ou use a correção abaixo.")
 
