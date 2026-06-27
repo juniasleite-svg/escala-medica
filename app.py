@@ -1203,21 +1203,21 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                     help=f"Quantas semanas cada SG fica neste bloco (passando por todos os serviços). Ex: {int(num_semanas)} sem ÷ {int(num_locais)} blocos = {default_sem_sg} sem/bloco por SG."
                 )
             with col_dur2:
-                sgs_por_srv = max(n_sgs_total // n_srv_bloco, 1) if n_srv_bloco > 0 else n_sgs_total
-                # Duração do bloco no calendário = sem_por_sg
-                # (todos os SGs estão no bloco simultaneamente, distribuídos entre os serviços)
-                sem_bloco_total = sem_por_sg
+                # SGs presentes no bloco AO MESMO TEMPO (rodízio): total × semanas_no_bloco / total_semanas.
+                # Ex.: 6 SGs, 2 sem neste bloco, 8 sem totais -> 6*2/8 = 1,5 -> ~2 SGs por vez (não os 6).
+                sgs_simult = max(round(n_sgs_total * int(sem_por_sg) / max(int(num_semanas), 1)), 1)
+                sgs_por_srv = max(sgs_simult // n_srv_bloco, 1) if n_srv_bloco > 0 else sgs_simult
                 if n_srv_bloco > 1:
                     st.info(
-                        f"📊 **{sgs_por_srv} SGs simultâneos** por serviço · "
-                        f"cada SG fica **{sem_por_sg} sem** no bloco (rodando pelos {n_srv_bloco} serviços) · "
-                        f"duração total do bloco: **{sem_bloco_total} semanas**"
+                        f"📊 **{sgs_simult} SG(s) ao mesmo tempo** neste bloco (~{sgs_por_srv} por serviço) · "
+                        f"cada SG fica **{sem_por_sg} sem** aqui · "
+                        f"todos os {n_sgs_total} SGs passam por aqui ao longo do rodízio"
                     )
                 else:
                     st.info(
-                        f"📊 **{n_sgs_total} SGs simultâneos** neste bloco · "
-                        f"cada SG fica **{sem_por_sg} sem** · "
-                        f"duração total do bloco: **{sem_bloco_total} semanas**"
+                        f"📊 **{sgs_simult} SG(s) ao mesmo tempo** neste bloco · "
+                        f"cada SG fica **{sem_por_sg} sem** aqui · "
+                        f"todos os {n_sgs_total} SGs passam por aqui ao longo do rodízio"
                     )
 
             # Gerar duracao_sgs automaticamente
@@ -1319,35 +1319,38 @@ if st.button("🚀 Gerar Escala com IA", type="primary", use_container_width=Tru
         for idx_loc, loc in enumerate(locais):
             servs = [loc] + loc.get("servicos_extras", [])
             n_sgs_bloco = len(alunos_por_sg)
-            sgs_por_srv = max(n_sgs_bloco // len(servs), 1) if servs else n_sgs_bloco
             nome_bl = loc.get("nome_bloco") or loc.get("nome","") or f"Bloco {idx_loc+1}"
-
             sem_sg_bloco = int(loc.get("sem_por_sg", max(1, int(num_semanas) // max(int(num_locais), 1))))
+            # SGs presentes no bloco AO MESMO TEMPO (rodízio) — NÃO todos os SGs de uma vez.
+            sgs_simult = max(round(n_sgs_bloco * sem_sg_bloco / max(int(num_semanas), 1)), 1)
+            sgs_por_srv = max(sgs_simult // len(servs), 1) if servs else sgs_simult
             if len(servs) > 1:
                 nomes = [s.get("nome","?") for s in servs]
                 srv_desc_list = []
                 for j, srv in enumerate(servs):
-                    srv_desc_list.append(f"  - {srv.get('nome','?')} → atende {sgs_por_srv} SGs simultaneamente")
+                    srv_desc_list.append(f"  - {srv.get('nome','?')} → ~{sgs_por_srv} SG(s) ao mesmo tempo")
                     srv_copy = dict(srv)
                     srv_copy["bloco"] = nome_bl
-                    srv_copy["sgs_responsaveis"] = list(range(1, n_sgs_bloco+1))
+                    srv_copy["sgs_ao_mesmo_tempo"] = sgs_simult
                     todos_servicos.append(srv_copy)
-                sem_bloco_cal = sem_sg_bloco  # todos os SGs estão no bloco simultaneamente
                 blocos_desc.append(
                     f"Bloco '{nome_bl}' ({' + '.join(nomes)}) — {len(servs)} serviços com RODÍZIO INTERNO:\n"
-                    f"  • Cada SG fica {sem_sg_bloco} semanas neste bloco no total\n"
-                    f"  • Os SGs se dividem entre os {len(servs)} serviços E rodam (todos passam por todos)\n"
-                    f"  • {sgs_por_srv} SGs em cada serviço simultaneamente\n"
-                    f"  • Duração total do bloco no calendário: ~{sem_bloco_cal} semanas\n" +
+                    f"  • Em cada semana há ~{sgs_simult} SG(s) NESTE bloco ao mesmo tempo (NÃO os {n_sgs_bloco} SGs)\n"
+                    f"  • Cada SG fica {sem_sg_bloco} semanas aqui; ao longo do rodízio TODOS os SGs passam por este bloco\n"
+                    f"  • Os SG presentes se dividem entre os {len(servs)} serviços (~{sgs_por_srv} por serviço) e revezam\n" +
                     "\n".join(srv_desc_list) +
                     f"\n  ⚠️ NUNCA coloque o mesmo aluno em 2 serviços deste bloco no MESMO dia/turno"
                 )
             else:
                 srv_copy = dict(loc)
                 srv_copy["bloco"] = nome_bl
-                srv_copy["sgs_responsaveis"] = list(range(1, n_sgs_bloco+1))
+                srv_copy["sgs_ao_mesmo_tempo"] = sgs_simult
                 todos_servicos.append(srv_copy)
-                blocos_desc.append(f"Bloco '{nome_bl}': {loc.get('nome','?')} — serviço único ({sem_sg_bloco} sem/SG)")
+                blocos_desc.append(
+                    f"Bloco '{nome_bl}': {loc.get('nome','?')} — serviço único · "
+                    f"~{sgs_simult} SG(s) ao mesmo tempo (NÃO os {n_sgs_bloco} SGs); cada SG fica {sem_sg_bloco} sem aqui, "
+                    f"e todos os SGs passam por aqui ao longo do rodízio"
+                )
 
         briefing = f"""
 # BRIEFING DE ESCALA MÉDICA
@@ -1415,12 +1418,13 @@ Extras: {regras_extras}
                 dados1["resumo_horas"] = recalcular_resumo_horas(dados1, st.session_state.config_atual)
                 st.success(f"✅ Escala detalhada: {len(det)} entradas")
 
-                # Validação real + auto-correção (o Python é o juiz)
+                # Validação real + 1 passe rápido de rebalanceamento (em paralelo).
+                # Passes adicionais ficam a cargo do botão "Rebalancear" (você decide quando).
                 val0 = validar_escala(dados1, st.session_state.config_atual)
                 if not val0["ok"]:
                     n_est, n_con = len(val0["estouros"]), len(val0["conflitos"])
                     with st.spinner(f"⚖️ Rebalanceando turnos ({n_est} estouro(s) de CH, {n_con} conflito(s))... ⏳"):
-                        dados1, _ = corrigir_escala_loop(dados1, st.session_state.config_atual, briefing)
+                        dados1, _ = corrigir_escala_loop(dados1, st.session_state.config_atual, briefing, max_rodadas=1)
             else:
                 st.warning("⚠️ Passo 2 não retornou dados. Tente o botão 'Gerar escala detalhada agora' abaixo.")
 
@@ -1453,7 +1457,7 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
                 val0 = validar_escala(dados_atual, cfg_atual)
                 if not val0["ok"]:
                     with st.spinner("⚖️ Rebalanceando turnos para respeitar as regras... ⏳"):
-                        dados_atual, _ = corrigir_escala_loop(dados_atual, cfg_atual, briefing_atual)
+                        dados_atual, _ = corrigir_escala_loop(dados_atual, cfg_atual, briefing_atual, max_rodadas=1)
                 st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
                 st.success(f"✅ {len(det)} entradas geradas!")
                 st.rerun()
