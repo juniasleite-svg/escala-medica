@@ -19,7 +19,7 @@ def chamar_claude(mensagens, system_prompt="", max_tokens=8000):
         headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
         json={"model": "claude-sonnet-4-6", "max_tokens": max_tokens,
               "system": system_prompt, "messages": mensagens},
-        timeout=120
+        timeout=180
     )
     result = resp.json()
     if "content" not in result:
@@ -109,19 +109,14 @@ def extrair_json(texto):
 
 # ── System prompt para geração ───────────────────────────────────────────────
 SYSTEM_GERAR = """Você é um especialista em escalas de internato médico.
-Gere a escala completa seguindo EXATAMENTE as regras do briefing.
+Gere a escala seguindo EXATAMENTE as regras do briefing.
 Responda APENAS com JSON válido, sem texto antes ou depois, sem comentários //.
-
-IMPORTANTE: Use formato COMPACTO para escala_detalhada — agrupe por semana+local+turno (não repita uma linha por aluno).
 
 Estrutura obrigatória:
 {
-  "confirmacao": "resumo do que entendeu em 2-3 frases",
+  "confirmacao": "resumo em 2 frases",
   "calendario_rodizio": [
-    {"semana": 1, "periodo": "06/07-12/07", "alocacao": {"SG1": "Enf", "SG2": "PS", "SG3": "Amb"}}
-  ],
-  "escala_detalhada": [
-    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enf", "turno": "Manhã", "horario": "07-13h", "horas": 6, "sg": 1, "alunos": ["Nome1","Nome2","Nome3"]}
+    {"semana": 1, "periodo": "06/07-12/07", "alocacao": {"SG1": "Enf", "SG2": "PS"}}
   ],
   "resumo_horas": [
     {"sg": 1, "nome": "Nome Completo", "ra": "", "total_horas": 40, "semanas": [40,40,40,40,40,40,40,40], "plantoes_enf_fds": 1, "plantoes_ps_fds": 4, "cinderelas": 0}
@@ -129,10 +124,18 @@ Estrutura obrigatória:
   "auditoria": {"ch_ok": true, "cobertura_ok": true, "erros": [], "avisos": [], "aprovado": true}
 }
 
-REGRAS DE COMPACTAÇÃO:
-- escala_detalhada: 1 linha por (semana + data + local + turno), listando TODOS os alunos do SG no campo "alunos"
-- Não crie uma linha separada por aluno — isso torna o JSON enorme demais
-- resumo_horas: 1 linha por aluno com total e array de horas por semana"""
+NÃO inclua escala_detalhada nesta resposta — ela será gerada separadamente."""
+
+SYSTEM_DETALHE = """Você é um especialista em escalas de internato médico.
+Com base no briefing e no calendário de rodízio fornecido, gere APENAS a escala_detalhada.
+Responda APENAS com JSON válido, sem texto antes ou depois.
+
+Formato compacto — 1 linha por (semana+data+local+turno), listando todos os alunos do SG:
+{
+  "escala_detalhada": [
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enf", "turno": "Manhã", "horario": "07-13h", "horas": 6, "sg": 1, "alunos": ["Nome1","Nome2","Nome3"]}
+  ]
+}"""
 
 # ── Mostrar resultado ────────────────────────────────────────────────────────
 def mostrar_resultado(resposta_raw, esp, grupo, turma):
@@ -261,17 +264,17 @@ modo = st.radio("Como deseja começar?",
 st.divider()
 
 # ════════════════════════════════════════════════════════════════════════════
-# MODO IMPORTAR
+# MODO IMPORTAR — só faz o upload e análise, depois redireciona pro formulário
 # ════════════════════════════════════════════════════════════════════════════
 if modo == "📂 Importar escala existente e modificar":
     st.header("📂 Importar Escala Existente")
-    st.caption("Faça upload de qualquer Excel de escala já feita — a IA lê e preenche todos os campos automaticamente.")
+    st.caption("A IA lê seu Excel e preenche o formulário automaticamente — você edita o que quiser e gera.")
 
     col_up1, col_up2 = st.columns(2)
     with col_up1:
         arquivo_escala = st.file_uploader("Upload da escala existente (.xlsx)", type=["xlsx"], key="imp_escala")
     with col_up2:
-        arquivo_alunos_imp = st.file_uploader("Base de alunos (opcional)", type=["xlsx"], key="imp_alunos_file")
+        arquivo_alunos_imp = st.file_uploader("Base de alunos (.xlsx — opcional)", type=["xlsx"], key="imp_alunos_file")
 
     if arquivo_escala:
         if st.button("🤖 Analisar e preencher formulário com IA", type="primary", use_container_width=True):
@@ -285,12 +288,12 @@ if modo == "📂 Importar escala existente e modificar":
                         conteudo = conteudo[:12000] + "\n...[truncado]"
                         break
 
-                prompt = f"""Analise esta escala médica e extraia UM briefing completo em JSON.
+                prompt = f"""Analise esta escala médica e extraia o briefing completo em JSON.
 
-CONTEÚDO DO EXCEL:
+CONTEÚDO:
 {conteudo}
 
-Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura exata:
+Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
 {{
   "especialidade": "",
   "grupo": "",
@@ -299,7 +302,8 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura 
   "data_inicio": "YYYY-MM-DD",
   "num_semanas": 8,
   "num_sg": 6,
-  "alunos_por_sg": {{"1": ["Nome1","Nome2"], "2": ["Nome3"]}},
+  "alunos_por_sg": {{"1": ["Nome1"], "2": ["Nome2"]}},
+  "num_locais": 3,
   "locais": [
     {{
       "nome": "", "abrev": "", "obs": "",
@@ -307,235 +311,54 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura 
       "tarde": "12-18h", "min_tarde": 3, "max_tarde": 4,
       "bloqueios_tarde": [{{"dia": "Qui", "tipo": "Sem tarde", "horario": ""}}, {{"dia": "Ter", "tipo": "Horário reduzido", "horario": "12-16h"}}],
       "cinderela": "", "min_cind": 0, "max_cind": 0, "dias_cind": [],
-      "fds": false, "fds_quem": "", "fds_comp": "",
-      "fds_manha": "", "fds_min_manha": 0, "fds_max_manha": 0,
-      "fds_tarde": "", "fds_min_tarde": 0, "fds_max_tarde": 0,
-      "servico2": "", "servico2_obs": ""
+      "fds": false, "fds_manha": "", "fds_tarde": "", "fds_cind": "",
+      "fds_min_manha": 0, "fds_max_manha": 2, "fds_min_tarde": 0, "fds_max_tarde": 2,
+      "fds_min_cind": 0, "fds_max_cind": 0,
+      "fds_quem": "", "fds_comp": "", "servico2": "", "servico2_obs": "",
+      "duracao_por_sg": {{}}, "cov_tarde": 3
     }}
   ],
   "rodizio_desc": "descrição do rodízio",
-  "regras_especiais": {{
-    "quinta": "Sem tarde (ENAMED)",
-    "terca": "Tarde encurtada 12-16h",
-    "limite_ch": 40,
-    "limite_abs": 43,
-    "fds": "",
-    "extras": ""
-  }},
-  "resumo": "descrição em português do que você entendeu"
+  "regra_quinta": "Sem tarde (ENAMED para todos)",
+  "regra_terca": "Tarde encurtada 12-16h",
+  "limite_ch": 40,
+  "limite_abs": 43,
+  "regra_fds": "",
+  "regras_extras": "",
+  "resumo": "descrição em português"
 }}"""
 
                 resposta = chamar_claude([{"role": "user", "content": prompt}], max_tokens=6000)
                 if resposta:
                     dados = extrair_json(resposta)
                     if dados:
-                        st.session_state.escala_importada = dados
-                        st.success("✅ Escala analisada! Formulário preenchido automaticamente.")
+                        # Salvar no session_state para pré-preencher o formulário
+                        st.session_state.prefill = dados
+                        # Se tiver base de alunos, tentar carregar também
+                        if arquivo_alunos_imp:
+                            st.session_state.prefill["_arquivo_alunos"] = True
+                        st.success("✅ Escala analisada! Role para baixo para ver o formulário pré-preenchido.")
+                        st.rerun()
                     else:
-                        st.error("Não consegui extrair o JSON. Tente novamente.")
-                        st.text(resposta[:300])
+                        st.error("Não consegui extrair os dados. Tente novamente.")
 
-    # Mostrar formulário pré-preenchido
-    if "escala_importada" in st.session_state:
-        dados = st.session_state.escala_importada
-        st.info(f"💡 **Resumo:** {dados.get('resumo','')}")
+    if "prefill" not in st.session_state:
+        st.info("👆 Faça o upload da sua escala e clique em analisar para preencher o formulário automaticamente.")
+        st.stop()
+    else:
+        st.success("✅ Formulário preenchido! Revise e edite o que precisar abaixo.")
         st.divider()
 
-        # Identificação
-        st.subheader("1️⃣ Identificação")
-        col1, col2 = st.columns(2)
-        with col1:
-            esp_i = st.text_input("Especialidade", value=dados.get("especialidade",""), key="ii_esp")
-            grupo_i = st.text_input("Grupo", value=dados.get("grupo",""), key="ii_grupo")
-            ano_i = st.selectbox("Ano", ["3º Ano","4º Ano","5º Ano","6º Ano"],
-                index=["3º Ano","4º Ano","5º Ano","6º Ano"].index(dados.get("ano_curso","4º Ano"))
-                if dados.get("ano_curso") in ["3º Ano","4º Ano","5º Ano","6º Ano"] else 1, key="ii_ano")
-        with col2:
-            turma_i = st.text_input("Turma", value=dados.get("turma",""), key="ii_turma")
-            try: d0 = datetime.date.fromisoformat(dados.get("data_inicio",""))
-            except: d0 = datetime.date.today()
-            data_i = st.date_input("Data início", value=d0, key="ii_data")
-            nsem_i = st.number_input("Nº semanas", 1, 20, int(dados.get("num_semanas",8)), key="ii_nsem")
-
-        # Alunos
-        st.subheader("2️⃣ Alunos por Subgrupo")
-        alunos_i = {}
-        for sg, nomes in sorted(dados.get("alunos_por_sg",{}).items(), key=lambda x: int(x[0])):
-            with st.expander(f"SG{sg} — {len(nomes)} alunos", expanded=False):
-                txt = st.text_area(f"Alunos SG{sg}", value="\n".join(nomes), key=f"ii_sg_{sg}", height=100)
-                alunos_i[sg] = [n.strip() for n in txt.strip().split("\n") if n.strip()]
-
-        # Locais (resumido — editável)
-        st.subheader("3️⃣ Locais")
-        locais_i = dados.get("locais", [])
-        locais_editados_i = []
-        for idx, loc in enumerate(locais_i):
-            with st.expander(f"📍 {loc.get('nome','Local')} — clique para editar", expanded=False):
-                col_la, col_lb = st.columns(2)
-                with col_la:
-                    nome_e = st.text_input("Nome", value=loc.get("nome",""), key=f"ii_ln_{idx}")
-                    manha_e = st.text_input("Manhã", value=loc.get("manha","07-13h"), key=f"ii_lm_{idx}")
-                    tarde_e = st.text_input("Tarde normal", value=loc.get("tarde","12-18h"), key=f"ii_lt_{idx}")
-                with col_lb:
-                    cind_e = st.text_input("Cinderela (vazio=sem)", value=loc.get("cinderela",""), key=f"ii_lc_{idx}")
-                    fds_e = st.checkbox("Tem FDS?", value=loc.get("fds",False), key=f"ii_lfds_{idx}")
-                    obs_e = st.text_input("Obs", value=loc.get("obs",""), key=f"ii_lobs_{idx}")
-
-                # Bloqueios
-                st.markdown("**🚫 Bloqueios de tarde:**")
-                key_bloqs = f"bloqs_imp_{idx}"
-                # Só inicializa se ainda não foi definido pelo usuário
-                if key_bloqs not in st.session_state:
-                    bloqs_orig = loc.get("bloqueios_tarde", [])
-                    st.session_state[key_bloqs] = bloqs_orig
-
-                col_bloq_ctrl1, col_bloq_ctrl2 = st.columns([1,1])
-                with col_bloq_ctrl1:
-                    if st.button("➕ Adicionar bloqueio", key=f"ii_add_b_{idx}"):
-                        st.session_state[key_bloqs].append({"dia": "Seg", "tipo": "Sem tarde", "horario": ""})
-                        st.rerun()
-                with col_bloq_ctrl2:
-                    if st.session_state[key_bloqs] and st.button("🗑️ Limpar todos", key=f"ii_clear_b_{idx}"):
-                        st.session_state[key_bloqs] = []
-                        st.rerun()
-
-                if not st.session_state[key_bloqs]:
-                    st.caption("Nenhum bloqueio — tarde ocorre normalmente em todos os dias úteis.")
-
-                bloqs_e = []
-                dias_op = ["Seg","Ter","Qua","Qui","Sex"]
-                for bi, bloq in enumerate(st.session_state[key_bloqs]):
-                    bc1, bc2, bc3, bc4 = st.columns([2,2,2,1])
-                    with bc1:
-                        idx_dia = dias_op.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op else 3
-                        d_e = st.selectbox("Dia", dias_op, index=idx_dia, key=f"ii_bd_{idx}_{bi}")
-                    with bc2:
-                        t_e = st.selectbox("Tipo", ["Sem tarde","Horário reduzido"],
-                            index=0 if bloq.get("tipo","")!="Horário reduzido" else 1, key=f"ii_bt_{idx}_{bi}")
-                    with bc3:
-                        if t_e == "Horário reduzido":
-                            h_e = st.text_input("Horário", value=bloq.get("horario","12-16h"), key=f"ii_bh_{idx}_{bi}")
-                        else:
-                            st.text_input("Horário", value="—", disabled=True, key=f"ii_bh_{idx}_{bi}")
-                            h_e = ""
-                    with bc4:
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button("❌", key=f"ii_del_b_{idx}_{bi}", help="Remover"):
-                            st.session_state[key_bloqs].pop(bi)
-                            st.rerun()
-                    bloqs_e.append({"dia": d_e, "tipo": t_e, "horario": h_e})
-
-                # FDS
-                st.markdown("**🏖️ Final de Semana:**")
-                col_fds1, col_fds2, col_fds3 = st.columns(3)
-                with col_fds1:
-                    fds_m_e = st.text_input("Manhã FDS", value=loc.get("fds_manha",""), key=f"ii_fdsm_{idx}", placeholder="ex: 07-12h")
-                with col_fds2:
-                    fds_t_e = st.text_input("Tarde FDS", value=loc.get("fds_tarde",""), key=f"ii_fdst_{idx}", placeholder="ex: 13-19h")
-                with col_fds3:
-                    fds_c_e = st.text_input("Cinderela FDS", value=loc.get("fds_cind",""), key=f"ii_fdsc_{idx}", placeholder="ex: 19-23h")
-                fds_quem_e = st.text_input("Quem faz FDS?", value=loc.get("fds_quem",""), key=f"ii_fdsq_{idx}",
-                    placeholder="ex: alunos do próprio local | alunos do Ambulatório")
-                fds_comp_e = st.text_input("Compensação FDS?", value=loc.get("fds_comp",""), key=f"ii_fdscomp_{idx}",
-                    placeholder="ex: perde 1 tarde | nenhuma")
-
-                loc_e = dict(loc)
-                loc_e.update({
-                    "nome": nome_e, "manha": manha_e, "tarde": tarde_e,
-                    "cinderela": cind_e, "fds": fds_e, "obs": obs_e,
-                    "bloqueios_tarde": bloqs_e,
-                    "fds_manha": fds_m_e, "fds_tarde": fds_t_e, "fds_cind": fds_c_e,
-                    "fds_quem": fds_quem_e, "fds_comp": fds_comp_e,
-                })
-                locais_editados_i.append(loc_e)
-
-        # Rodízio
-        st.subheader("4️⃣ Rodízio")
-        rodizio_i = st.text_area("Tabela de rodízio",
-            value=dados.get("rodizio_desc",""), height=100, key="ii_rod")
-
-        # Regras
-        st.subheader("5️⃣ Regras Especiais")
-        reg = dados.get("regras_especiais", {})
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            quinta_i = st.text_input("Quinta-feira", value=reg.get("quinta","Sem tarde (ENAMED)"), key="ii_qui")
-            terca_i = st.text_input("Terça-feira", value=reg.get("terca","Tarde 12-16h"), key="ii_ter")
-        with col_r2:
-            ch_i = st.number_input("Limite CH padrão", 20, 60, int(reg.get("limite_ch",40)), key="ii_ch")
-            chabs_i = st.number_input("Limite CH absoluto", 20, 60, int(reg.get("limite_abs",43)), key="ii_chabs")
-        fds_reg_i = st.text_input("Regras FDS", value=reg.get("fds",""), key="ii_fds")
-        extras_i = st.text_area("Regras extras", value=reg.get("extras",""), height=60, key="ii_ext")
-
-        # Modificações
-        st.subheader("✏️ O que deseja modificar?")
-        modif_i = st.text_area("Descreva livremente (deixe vazio para manter tudo igual)",
-            height=80, key="ii_modif",
-            placeholder="Ex: Trocar Ana do SG2 para SG4 nas semanas 5-8\nAdicionar feriado em 09/07\nPA deve ter FDS manhã e tarde")
-
-        if st.button("🚀 Gerar Escala com IA", type="primary", use_container_width=True):
-            briefing = f"""
-ESPECIALIDADE: {esp_i} | GRUPO: {grupo_i} | TURMA: {turma_i} | ANO: {ano_i}
-DATA INÍCIO: {data_i} | SEMANAS: {nsem_i}
-
-ALUNOS:
-{json.dumps(alunos_i, ensure_ascii=False, indent=2)}
-
-LOCAIS:
-{json.dumps(locais_editados_i, ensure_ascii=False, indent=2)}
-
-RODÍZIO:
-{rodizio_i}
-
-REGRAS:
-Quinta: {quinta_i}
-Terça: {terca_i}
-CH limite: {ch_i}h | Absoluto: {chabs_i}h
-FDS: {fds_reg_i}
-Extras: {extras_i}
-
-MODIFICAÇÕES SOLICITADAS:
-{modif_i if modif_i else "Nenhuma — manter a lógica original"}
-"""
-            st.session_state.briefing_atual = briefing
-            st.session_state.config_atual = {
-                "especialidade": esp_i, "grupo": grupo_i, "turma": turma_i,
-                "ano_curso": ano_i, "data_inicio": str(data_i), "num_semanas": int(nsem_i),
-                "locais": locais_editados_i, "alunos_por_sg": alunos_i,
-                "rodizio_desc": rodizio_i,
-                "regras_especiais": {"quinta": quinta_i, "terca": terca_i,
-                    "limite_ch": int(ch_i), "limite_abs": int(chabs_i), "fds": fds_reg_i},
-                "pares": [], "blocos": [],
-            }
-            with st.spinner("Gerando escala... ⏳"):
-                resp = chamar_claude(
-                    [{"role": "user", "content": f"Gere a escala:\n{briefing}"}],
-                    system_prompt=SYSTEM_GERAR, max_tokens=16000
-                )
-                if resp:
-                    st.session_state.escala_gerada = resp
-                    st.session_state.esp_atual = esp_i
-                    st.session_state.grupo_atual = grupo_i
-                    st.session_state.turma_atual = turma_i
-                    st.rerun()
-
-    # Mostrar resultado se gerado
-    if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
-        st.divider()
-        st.header("📊 Resultado")
-        mostrar_resultado(
-            st.session_state.escala_gerada,
-            st.session_state.get("esp_atual",""),
-            st.session_state.get("grupo_atual",""),
-            st.session_state.get("turma_atual","")
-        )
-
-    st.stop()
-
 # ════════════════════════════════════════════════════════════════════════════
-# MODO CRIAR NOVA ESCALA
+# FORMULÁRIO ÚNICO (usado por ambos os modos)
 # ════════════════════════════════════════════════════════════════════════════
-st.title("🏥 Gerador de Escalas Médicas")
+
+# Pegar dados pré-preenchidos se existirem
+pf = st.session_state.get("prefill", {})
+
+if pf:
+    st.info(f"💡 **Importado:** {pf.get('resumo','')}")
+
 st.header("📋 Briefing da Escala")
 st.caption("Preencha com atenção — quanto mais detalhado, mais precisa a escala gerada.")
 
@@ -543,20 +366,64 @@ st.caption("Preencha com atenção — quanto mais detalhado, mais precisa a esc
 with st.expander("📌 Bloco 1 — Identificação", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        especialidade = st.text_input("Especialidade *", placeholder="ex: Clínica Médica")
-        ano_curso = st.selectbox("Ano do curso *", ["3º Ano","4º Ano","5º Ano","6º Ano"], index=1)
-        turma = st.text_input("Turma *", placeholder="ex: T6")
+        especialidade = st.text_input("Especialidade *",
+            value=pf.get("especialidade",""),
+            placeholder="ex: Clínica Médica")
+        anos = ["3º Ano","4º Ano","5º Ano","6º Ano"]
+        ano_idx = anos.index(pf.get("ano_curso","4º Ano")) if pf.get("ano_curso") in anos else 1
+        ano_curso = st.selectbox("Ano do curso *", anos, index=ano_idx)
+        turma = st.text_input("Turma *", value=pf.get("turma",""), placeholder="ex: T6")
     with col2:
-        grupo = st.text_input("Grupo *", placeholder="ex: Grupo A")
-        data_inicio = st.date_input("Data de início (segunda-feira) *")
-        num_semanas = st.number_input("Número de semanas *", 1, 20, 8)
+        grupo = st.text_input("Grupo *", value=pf.get("grupo",""), placeholder="ex: Grupo A")
+        try: data_def = datetime.date.fromisoformat(pf.get("data_inicio",""))
+        except: data_def = datetime.date.today()
+        data_inicio = st.date_input("Data de início (segunda-feira) *", value=data_def)
+        num_semanas = st.number_input("Número de semanas *", 1, 20, int(pf.get("num_semanas",8)))
 
 # BLOCO 2
 with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
     arquivo_alunos = st.file_uploader("Upload Excel de alunos (opcional)", type=["xlsx"])
-    num_sg = st.number_input("Número de subgrupos", 2, 8, 6)
+    num_sg = st.number_input("Número de subgrupos", 2, 8, int(pf.get("num_sg",6)))
     alunos_por_sg = {}
-    if arquivo_alunos:
+
+    # Se importado, mostrar os alunos pré-preenchidos editáveis
+    if pf.get("alunos_por_sg"):
+        st.caption("✏️ Alunos importados — edite se necessário:")
+        for sg, nomes in sorted(pf["alunos_por_sg"].items(), key=lambda x: int(x[0])):
+            with st.expander(f"SG{sg} — {len(nomes)} alunos", expanded=False):
+                txt = st.text_area(f"Alunos SG{sg}", value="\n".join(nomes), key=f"sg_imp_{sg}", height=100)
+                alunos_por_sg[sg] = [n.strip() for n in txt.strip().split("\n") if n.strip()]
+
+        # Opção de recarregar com outra opção de SGs
+        if arquivo_alunos:
+            col_sg1, col_sg2 = st.columns(2)
+            with col_sg1:
+                opcao_sg = st.selectbox("Mudar para:", ["Manter atual","4 Subgrupos","6 Subgrupos","8 Subgrupos"])
+            with col_sg2:
+                if opcao_sg != "Manter atual" and st.button("🔄 Recarregar da planilha"):
+                    try:
+                        n_alvo = int(opcao_sg.split()[0])
+                        xls_a = pd.ExcelFile(arquivo_alunos)
+                        sheets_g = [s for s in xls_a.sheet_names if "GRUPO" in s.upper()]
+                        gp = pf.get("grupo","").upper().replace("GRUPO","").strip()
+                        sh = next((s for s in sheets_g if gp in s.upper()), sheets_g[0] if sheets_g else None)
+                        if sh:
+                            df_r = pd.read_excel(arquivo_alunos, sheet_name=sh)
+                            if "OPÇÃO" in df_r.columns:
+                                op = next((o for o in df_r["OPÇÃO"].dropna().unique() if f"{n_alvo} SG" in str(o)), None)
+                                if op:
+                                    df_f = df_r[df_r["OPÇÃO"]==op]
+                                    novos = {str(int(s)): df_f[df_f["Sub Grupo"]==s]["Nome Completo"].tolist()
+                                             for s in sorted(df_f["Sub Grupo"].dropna().unique())}
+                                    pf["alunos_por_sg"] = novos
+                                    pf["num_sg"] = n_alvo
+                                    st.session_state.prefill = pf
+                                    st.success(f"✅ {n_alvo} SGs carregados!")
+                                    st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
+
+    elif arquivo_alunos:
         try:
             xls2 = pd.ExcelFile(arquivo_alunos)
             grupos_disp = [s for s in xls2.sheet_names if "GRUPO" in s.upper()]
@@ -573,49 +440,47 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
                     st.success(f"✅ {len(df_f)} alunos em {len(alunos_por_sg)} SGs")
         except Exception as e:
             st.error(f"Erro: {e}")
+
     if not alunos_por_sg:
-        st.caption("Ou digite manualmente:")
+        st.caption("Digite manualmente:")
         for sg in range(1, int(num_sg)+1):
             txt = st.text_area(f"SG{sg} (um nome por linha)", key=f"sg_{sg}", height=80)
             if txt.strip():
                 alunos_por_sg[str(sg)] = [n.strip() for n in txt.strip().split("\n") if n.strip()]
 
-# BLOCO 3
+# BLOCO 3 — Locais
 with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
-    num_locais = st.number_input("Número de locais", 2, 8, 3)
+    pf_locais = pf.get("locais", [])
+    num_locais_def = int(pf.get("num_locais", len(pf_locais) if pf_locais else 3))
+    num_locais = st.number_input("Número de locais", 2, 8, num_locais_def)
     locais = []
     for i in range(int(num_locais)):
+        # Pegar dados pré-preenchidos para este local
+        pl = pf_locais[i] if i < len(pf_locais) else {}
         with st.container():
             st.markdown(f"### Local {i+1}")
             col_a, col_b = st.columns(2)
             with col_a:
-                nome_l = st.text_input("Nome do local", key=f"ln_{i}", placeholder="ex: Enfermaria")
-                abrev_l = st.text_input("Abreviação", key=f"la_{i}", placeholder="ex: Enf")
+                nome_l = st.text_input("Nome do local", value=pl.get("nome",""), key=f"ln_{i}", placeholder="ex: Enfermaria")
+                abrev_l = st.text_input("Abreviação", value=pl.get("abrev",""), key=f"la_{i}", placeholder="ex: Enf")
             with col_b:
-                obs_l = st.text_input("Observações", key=f"lobs_{i}", placeholder="ex: FDS feito pelos alunos do Amb")
-                unir = st.checkbox("🔗 Unir com outro serviço neste bloco", key=f"lunir_{i}")
-                s2_nome = st.text_input("2º serviço (nome)", key=f"ln2_{i}") if unir else ""
-                s2_obs = st.text_input("2º serviço (regras)", key=f"lobs2_{i}") if unir else ""
+                obs_l = st.text_input("Observações", value=pl.get("obs",""), key=f"lobs_{i}", placeholder="ex: FDS feito pelos alunos do Amb")
+                unir = st.checkbox("🔗 Unir com outro serviço", value=bool(pl.get("servico2","")), key=f"lunir_{i}")
+                s2_nome = st.text_input("2º serviço", value=pl.get("servico2",""), key=f"ln2_{i}") if unir else ""
+                s2_obs = st.text_input("2º serviço (regras)", value=pl.get("servico2_obs",""), key=f"lobs2_{i}") if unir else ""
 
-            # Duração por subgrupo
-            st.markdown("**📅 Duração por Subgrupo neste local (semanas):**")
-            st.caption("Defina quantas semanas cada SG fica neste local. Use 0 se o SG não passa por aqui.")
+            # Duração por SG
             n_sgs_atual = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
+            st.markdown("**📅 Duração por SG neste local (semanas, 0 = não passa aqui):**")
             duracao_sgs = {}
             dur_cols = st.columns(min(n_sgs_atual, 6))
+            pl_dur = pl.get("duracao_por_sg", {})
             for sg_idx in range(n_sgs_atual):
                 sg_num = sg_idx + 1
                 with dur_cols[sg_idx % 6]:
-                    dur = st.number_input(f"SG{sg_num}", 0, int(num_semanas), 0,
-                                          key=f"dur_{i}_{sg_num}",
-                                          help=f"Semanas que SG{sg_num} fica em {nome_l or f'Local {i+1}'}")
-                    if dur > 0:
-                        duracao_sgs[str(sg_num)] = int(dur)
-            if duracao_sgs:
-                total_sem = sum(duracao_sgs.values())
-                media = total_sem / len(duracao_sgs)
-                st.caption(f"Total alocado: {total_sem} semanas × SG | Média: {media:.1f} sem/SG")
-
+                    dur = st.number_input(f"SG{sg_num}", 0, int(num_semanas),
+                        int(pl_dur.get(str(sg_num), 0)), key=f"dur_{i}_{sg_num}")
+                    if dur > 0: duracao_sgs[str(sg_num)] = int(dur)
 
             st.markdown("**⏰ Turnos:**")
             tab_util, tab_fds = st.tabs(["📅 Dias Úteis", "🏖️ Final de Semana"])
@@ -624,72 +489,92 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
                 col_u1, col_u2, col_u3 = st.columns(3)
                 with col_u1:
                     st.markdown("**🌅 Manhã**")
-                    tem_m = st.checkbox("Tem manhã?", value=True, key=f"tm_{i}")
-                    hor_m = st.text_input("Horário", value="07-13h", key=f"hm_{i}") if tem_m else ""
-                    min_m = st.number_input("Mín/dia", 0, 20, 0, key=f"mnm_{i}") if tem_m else 0
-                    max_m = st.number_input("Máx/dia", 0, 20, 6, key=f"mxm_{i}") if tem_m else 0
+                    tem_m = st.checkbox("Tem manhã?", value=bool(pl.get("manha","07-13h")), key=f"tm_{i}")
+                    hor_m = st.text_input("Horário", value=pl.get("manha","07-13h"), key=f"hm_{i}") if tem_m else ""
+                    min_m = st.number_input("Mín/dia", 0, 20, int(pl.get("min_manha",0)), key=f"mnm_{i}") if tem_m else 0
+                    max_m = st.number_input("Máx/dia", 0, 20, int(pl.get("max_manha",6)), key=f"mxm_{i}") if tem_m else 0
 
                 with col_u2:
                     st.markdown("**🌇 Tarde**")
-                    tem_t = st.checkbox("Tem tarde?", value=True, key=f"tt_{i}")
+                    tem_t = st.checkbox("Tem tarde?", value=bool(pl.get("tarde","12-18h")), key=f"tt_{i}")
                     if tem_t:
-                        hor_t = st.text_input("Horário normal", value="12-18h", key=f"ht_{i}")
-                        min_t = st.number_input("Mín/dia", 0, 20, 3, key=f"mnt_{i}")
-                        max_t = st.number_input("Máx/dia", 0, 20, 4, key=f"mxt_{i}")
+                        hor_t = st.text_input("Horário normal", value=pl.get("tarde","12-18h"), key=f"ht_{i}")
+                        min_t = st.number_input("Mín/dia", 0, 20, int(pl.get("min_tarde",3)), key=f"mnt_{i}")
+                        max_t = st.number_input("Máx/dia", 0, 20, int(pl.get("max_tarde",4)), key=f"mxt_{i}")
                         st.markdown("**🚫 Bloqueios:**")
-                        n_bloq = st.number_input("Quantos?", 0, 5, 1, key=f"nbloq_{i}")
+                        key_bloqs = f"bloqs_{i}"
+                        if key_bloqs not in st.session_state:
+                            st.session_state[key_bloqs] = pl.get("bloqueios_tarde", [
+                                {"dia":"Qui","tipo":"Sem tarde","horario":""}
+                            ])
+                        col_ba, col_bb = st.columns(2)
+                        with col_ba:
+                            if st.button("➕ Adicionar", key=f"add_b_{i}"):
+                                st.session_state[key_bloqs].append({"dia":"Seg","tipo":"Sem tarde","horario":""})
+                                st.rerun()
+                        with col_bb:
+                            if st.session_state[key_bloqs] and st.button("🗑️ Limpar todos", key=f"clr_b_{i}"):
+                                st.session_state[key_bloqs] = []
+                                st.rerun()
+                        if not st.session_state[key_bloqs]:
+                            st.caption("Sem bloqueios — tarde em todos os dias úteis.")
                         bloqueios_t = []
-                        for b in range(int(n_bloq)):
-                            dias_op = ["Seg","Ter","Qua","Qui","Sex"]
-                            bc1, bc2, bc3 = st.columns(3)
+                        dias_op = ["Seg","Ter","Qua","Qui","Sex"]
+                        for b, bloq in enumerate(st.session_state[key_bloqs]):
+                            bc1,bc2,bc3,bc4 = st.columns([2,2,2,1])
                             with bc1:
-                                d_b = st.selectbox("Dia", dias_op, key=f"dbloq_{i}_{b}",
-                                    index=3 if b==0 else (1 if b==1 else 0))
+                                idx_d = dias_op.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op else 3
+                                d_b = st.selectbox("Dia", dias_op, index=idx_d, key=f"dbloq_{i}_{b}")
                             with bc2:
-                                t_b = st.selectbox("Tipo", ["Sem tarde","Horário reduzido"], key=f"tbloq_{i}_{b}")
+                                t_b = st.selectbox("Tipo", ["Sem tarde","Horário reduzido"],
+                                    index=1 if bloq.get("tipo")=="Horário reduzido" else 0, key=f"tbloq_{i}_{b}")
                             with bc3:
-                                h_b = st.text_input("Horário", value="12-16h", key=f"hbloq_{i}_{b}") if t_b=="Horário reduzido" else ""
-                            bloqueios_t.append({"dia": d_b, "tipo": t_b, "horario": h_b})
+                                h_b = st.text_input("Horário", value=bloq.get("horario","12-16h"), key=f"hbloq_{i}_{b}") if t_b=="Horário reduzido" else ""
+                                if t_b != "Horário reduzido": st.text_input("—", disabled=True, key=f"hbloq_{i}_{b}")
+                            with bc4:
+                                st.write("")
+                                if st.button("❌", key=f"del_b_{i}_{b}"):
+                                    st.session_state[key_bloqs].pop(b); st.rerun()
+                            bloqueios_t.append({"dia":d_b,"tipo":t_b,"horario":h_b})
                     else:
-                        hor_t, min_t, max_t, bloqueios_t = "", 0, 0, []
+                        hor_t,min_t,max_t,bloqueios_t = "",0,0,[]
 
                 with col_u3:
                     st.markdown("**🌙 Cinderela**")
-                    tem_c = st.checkbox("Tem cinderela?", key=f"tc_{i}")
+                    tem_c = st.checkbox("Tem cinderela?", value=bool(pl.get("cinderela","")), key=f"tc_{i}")
                     if tem_c:
-                        hor_c = st.text_input("Horário", value="19-23h", key=f"hc_{i}")
-                        min_c = st.number_input("Mín/dia", 0, 10, 0, key=f"mnc_{i}")
-                        max_c = st.number_input("Máx/dia", 0, 10, 2, key=f"mxc_{i}")
-                        dias_c = st.multiselect("Dias", ["Seg","Ter","Qua","Qui","Sex"], default=["Sex"], key=f"dc_{i}")
+                        hor_c = st.text_input("Horário", value=pl.get("cinderela","19-23h"), key=f"hc_{i}")
+                        min_c = st.number_input("Mín/dia", 0, 10, int(pl.get("min_cind",0)), key=f"mnc_{i}")
+                        max_c = st.number_input("Máx/dia", 0, 10, int(pl.get("max_cind",2)), key=f"mxc_{i}")
+                        dias_c = st.multiselect("Dias", ["Seg","Ter","Qua","Qui","Sex"],
+                            default=pl.get("dias_cind",["Sex"]), key=f"dc_{i}")
                     else:
-                        hor_c, min_c, max_c, dias_c = "", 0, 0, []
+                        hor_c,min_c,max_c,dias_c = "",0,0,[]
 
             with tab_fds:
-                tem_fds = st.checkbox("Tem plantão no FDS?", key=f"lfds_{i}")
+                tem_fds = st.checkbox("Tem plantão no FDS?", value=pl.get("fds",False), key=f"lfds_{i}")
                 if tem_fds:
-                    col_f1, col_f2, col_f3 = st.columns(3)
+                    col_f1,col_f2,col_f3 = st.columns(3)
                     with col_f1:
                         st.markdown("**🌅 Manhã FDS**")
-                        tem_fm = st.checkbox("Tem?", value=True, key=f"tfm_{i}")
-                        hor_fm = st.text_input("Horário", value="07-12h", key=f"hfm_{i}") if tem_fm else ""
-                        min_fm = st.number_input("Mín", 0, 10, 1, key=f"mnfm_{i}") if tem_fm else 0
-                        max_fm = st.number_input("Máx", 0, 10, 2, key=f"mxfm_{i}") if tem_fm else 0
+                        tem_fm = st.checkbox("Tem?", value=bool(pl.get("fds_manha","")), key=f"tfm_{i}")
+                        hor_fm = st.text_input("Horário", value=pl.get("fds_manha","07-12h"), key=f"hfm_{i}") if tem_fm else ""
+                        min_fm = st.number_input("Mín", 0, 10, int(pl.get("fds_min_manha",1)), key=f"mnfm_{i}") if tem_fm else 0
+                        max_fm = st.number_input("Máx", 0, 10, int(pl.get("fds_max_manha",2)), key=f"mxfm_{i}") if tem_fm else 0
                     with col_f2:
                         st.markdown("**🌇 Tarde FDS**")
-                        tem_ft = st.checkbox("Tem?", key=f"tft_{i}")
-                        hor_ft = st.text_input("Horário", value="13-19h", key=f"hft_{i}") if tem_ft else ""
-                        min_ft = st.number_input("Mín", 0, 10, 1, key=f"mnft_{i}") if tem_ft else 0
-                        max_ft = st.number_input("Máx", 0, 10, 2, key=f"mxft_{i}") if tem_ft else 0
+                        tem_ft = st.checkbox("Tem?", value=bool(pl.get("fds_tarde","")), key=f"tft_{i}")
+                        hor_ft = st.text_input("Horário", value=pl.get("fds_tarde","13-19h"), key=f"hft_{i}") if tem_ft else ""
+                        min_ft = st.number_input("Mín", 0, 10, int(pl.get("fds_min_tarde",1)), key=f"mnft_{i}") if tem_ft else 0
+                        max_ft = st.number_input("Máx", 0, 10, int(pl.get("fds_max_tarde",2)), key=f"mxft_{i}") if tem_ft else 0
                     with col_f3:
                         st.markdown("**🌙 Cinderela FDS**")
-                        tem_fc = st.checkbox("Tem?", key=f"tfc_{i}")
-                        hor_fc = st.text_input("Horário", value="19-23h", key=f"hfc_{i}") if tem_fc else ""
-                        min_fc = st.number_input("Mín", 0, 10, 0, key=f"mnfc_{i}") if tem_fc else 0
-                        max_fc = st.number_input("Máx", 0, 10, 2, key=f"mxfc_{i}") if tem_fc else 0
-                    quem_fds = st.text_input("Quem faz o FDS?", key=f"lfdsquem_{i}",
-                        placeholder="ex: alunos do próprio local | alunos do Ambulatório")
-                    comp_fds = st.text_input("Compensação?", key=f"lfdscomp_{i}",
-                        placeholder="ex: perde 1 tarde | nenhuma")
+                        tem_fc = st.checkbox("Tem?", value=bool(pl.get("fds_cind","")), key=f"tfc_{i}")
+                        hor_fc = st.text_input("Horário", value=pl.get("fds_cind","19-23h"), key=f"hfc_{i}") if tem_fc else ""
+                        min_fc = st.number_input("Mín", 0, 10, int(pl.get("fds_min_cind",0)), key=f"mnfc_{i}") if tem_fc else 0
+                        max_fc = st.number_input("Máx", 0, 10, int(pl.get("fds_max_cind",2)), key=f"mxfc_{i}") if tem_fc else 0
+                    quem_fds = st.text_input("Quem faz?", value=pl.get("fds_quem",""), key=f"lfdsquem_{i}")
+                    comp_fds = st.text_input("Compensação?", value=pl.get("fds_comp",""), key=f"lfdscomp_{i}")
                 else:
                     hor_fm=hor_ft=hor_fc=quem_fds=comp_fds=""
                     min_fm=max_fm=min_ft=max_ft=min_fc=max_fc=0
@@ -711,52 +596,32 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
             })
             st.divider()
 
-# BLOCO 4 — Rodízio com sugestão automática
+# BLOCO 4 — Rodízio
 with st.expander("🔄 Bloco 4 — Tabela de Rodízio", expanded=True):
-
     def gerar_sugestoes(n_sg, n_locais, n_sem, nomes_loc):
         locs = nomes_loc if nomes_loc and all(nomes_loc) else [f"Local{j+1}" for j in range(n_locais)]
         sugestoes = []
-
-        # Sugestão por pares
         if n_sg % n_locais == 0:
             tam = n_sg // n_locais
-            sems_loc = n_sem // n_locais
-            resto = n_sem % n_locais
+            sems_loc = n_sem // n_locais; resto = n_sem % n_locais
             linhas = []
             for p in range(n_locais):
-                sgs = "+".join([f"SG{s}" for s in range(p*tam+1, (p+1)*tam+1)])
-                sem_at = 1
-                rot = []
+                sgs = "+".join([f"SG{s}" for s in range(p*tam+1,(p+1)*tam+1)])
+                sem_at = 1; rot = []
                 for j in range(n_locais):
                     q = sems_loc + (1 if j < resto else 0)
-                    rot.append(f"{locs[(p+j)%n_locais]} S{sem_at}-{sem_at+q-1}")
-                    sem_at += q
+                    rot.append(f"{locs[(p+j)%n_locais]} S{sem_at}-{sem_at+q-1}"); sem_at += q
                 linhas.append(f"Par{p+1} = {sgs}: {' → '.join(rot)}")
-            sugestoes.append({"nome": f"🔄 Por pares ({tam} SG/par, {sems_loc}{'–'+str(sems_loc+1) if resto else ''} sem/local)", "texto": "\n".join(linhas)})
-
-        # Individual
-        sems_loc2 = n_sem // n_locais
-        resto2 = n_sem % n_locais
+            sugestoes.append({"nome": f"🔄 Por pares ({tam} SG/par)", "texto": "\n".join(linhas)})
+        sems_loc2 = n_sem//n_locais; resto2 = n_sem%n_locais
         linhas2 = []
-        for sg in range(1, n_sg+1):
-            sem_at = 1
-            rot = []
+        for sg in range(1,n_sg+1):
+            sem_at=1; rot=[]
             for j in range(n_locais):
-                q = sems_loc2 + (1 if j < resto2 else 0)
-                rot.append(f"{locs[(sg-1+j)%n_locais]} S{sem_at}-{sem_at+q-1}")
-                sem_at += q
+                q=sems_loc2+(1 if j<resto2 else 0)
+                rot.append(f"{locs[(sg-1+j)%n_locais]} S{sem_at}-{sem_at+q-1}"); sem_at+=q
             linhas2.append(f"SG{sg}: {' → '.join(rot)}")
-        sugestoes.append({"nome": "🔄 Individual (cada SG passa por todos os locais)", "texto": "\n".join(linhas2)})
-
-        # Semanal estilo Cirurgia
-        if n_sg >= n_locais:
-            linhas3 = []
-            for s in range(1, n_sem+1):
-                alocacao = " | ".join([f"SG{((j+s-1)%n_sg)+1}→{locs[j%n_locais]}" for j in range(n_locais)])
-                linhas3.append(f"Sem {s}: {alocacao}")
-            sugestoes.append({"nome": "📅 Semanal (1 SG/local/semana, estilo Cirurgia)", "texto": "\n".join(linhas3)})
-
+        sugestoes.append({"nome":"🔄 Individual (cada SG passa por todos)","texto":"\n".join(linhas2)})
         return sugestoes
 
     nomes_loc_atual = [l.get("nome","") for l in locais]
@@ -766,31 +631,27 @@ with st.expander("🔄 Bloco 4 — Tabela de Rodízio", expanded=True):
         st.session_state.sugestoes_rod = gerar_sugestoes(n_sg_atual, int(num_locais), int(num_semanas), nomes_loc_atual)
 
     if st.session_state.get("sugestoes_rod"):
-        st.markdown("**Escolha uma opção:**")
         for idx, sug in enumerate(st.session_state.sugestoes_rod):
             with st.expander(sug["nome"], expanded=(idx==0)):
                 st.code(sug["texto"])
                 if st.button(f"✅ Usar esta", key=f"usar_{idx}"):
-                    st.session_state.rodizio_escolhido = sug["texto"]
-                    st.success("Aplicado!")
+                    st.session_state.rodizio_escolhido = sug["texto"]; st.success("Aplicado!")
 
     rodizio_desc = st.text_area("Tabela de rodízio (edite à vontade)",
-        value=st.session_state.get("rodizio_escolhido",""), height=150,
-        placeholder="Ex:\nPar1 = SG1+SG2: Enf S1-3 → PS S4-5 → Amb S6-8\nPar2 = SG3+SG4: PS S1-3 → Amb S4-5 → Enf S6-8")
+        value=st.session_state.get("rodizio_escolhido", pf.get("rodizio_desc","")),
+        height=150, placeholder="Ex:\nPar1 = SG1+SG2: Enf S1-3 → PS S4-5 → Amb S6-8")
 
 # BLOCO 5
 with st.expander("⚙️ Bloco 5 — Regras Especiais", expanded=True):
     col_r1, col_r2 = st.columns(2)
     with col_r1:
-        regra_quinta = st.text_input("Quinta-feira", value="Sem tarde (ENAMED para todos)")
-        regra_terca = st.text_input("Terça-feira", value="Tarde encurtada 12-16h (aula às 16h)")
-        limite_ch = st.number_input("Limite CH padrão (h)", 20, 60, 40)
+        regra_quinta = st.text_input("Quinta-feira", value=pf.get("regra_quinta","Sem tarde (ENAMED para todos)"))
+        regra_terca = st.text_input("Terça-feira", value=pf.get("regra_terca","Tarde encurtada 12-16h (aula às 16h)"))
+        limite_ch = st.number_input("Limite CH padrão (h)", 20, 60, int(pf.get("limite_ch",40)))
     with col_r2:
-        limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, 43)
-        regra_fds = st.text_area("Regras de plantão FDS", height=80,
-            placeholder="ex: FDS PS = alunos do Amb, 3M+3T, comp: perde 1 tarde Amb")
-        regras_extras = st.text_area("Outras regras", height=80,
-            placeholder="ex: Ambulatório: manhã 08-12h")
+        limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, int(pf.get("limite_abs",43)))
+        regra_fds = st.text_area("Regras de plantão FDS", value=pf.get("regra_fds",""), height=80)
+        regras_extras = st.text_area("Outras regras", value=pf.get("regras_extras",""), height=80)
 
 # BLOCO 6
 with st.expander("📊 Bloco 6 — Formato do Excel", expanded=False):
@@ -845,17 +706,28 @@ Abas: {', '.join(abas_excel)}
                 "limite_ch": int(limite_ch), "limite_abs": int(limite_abs), "fds": regra_fds},
             "pares": [], "blocos": [],
         }
-        with st.spinner("IA gerando sua escala... ⏳ Pode levar até 2 minutos"):
+        with st.spinner("Passo 1/2 — Calendário e resumo de horas... ⏳"):
             resposta = chamar_claude(
                 [{"role": "user", "content": f"Gere a escala:\n{briefing}"}],
-                system_prompt=SYSTEM_GERAR, max_tokens=16000
+                system_prompt=SYSTEM_GERAR, max_tokens=8000
             )
-            if resposta:
-                st.session_state.escala_gerada = resposta
-                st.session_state.esp_atual = especialidade
-                st.session_state.grupo_atual = grupo
-                st.session_state.turma_atual = turma
-                st.rerun()
+        if resposta:
+            dados1 = extrair_json(resposta) or {}
+            st.session_state.escala_gerada = resposta
+            st.session_state.esp_atual = especialidade
+            st.session_state.grupo_atual = grupo
+            st.session_state.turma_atual = turma
+            cal_gerado = json.dumps(dados1.get("calendario_rodizio",[]), ensure_ascii=False)
+            with st.spinner("Passo 2/2 — Escala detalhada dia a dia... ⏳"):
+                resp2 = chamar_claude(
+                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário:\n{cal_gerado}\n\nGere a escala_detalhada."}],
+                    system_prompt=SYSTEM_DETALHE, max_tokens=12000
+                )
+            if resp2:
+                dados2 = extrair_json(resp2) or {}
+                dados1["escala_detalhada"] = dados2.get("escala_detalhada", [])
+                st.session_state.escala_gerada = json.dumps(dados1, ensure_ascii=False)
+            st.rerun()
 
 # Mostrar resultado
 if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
@@ -867,3 +739,5 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
         st.session_state.get("grupo_atual",""),
         st.session_state.get("turma_atual","")
     )
+
+# ════════════════════════════════════════════════════════════════════════════
