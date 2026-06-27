@@ -9,23 +9,34 @@ import io
 st.set_page_config(page_title="Gerador de Escalas Médicas", page_icon="🏥", layout="wide")
 
 # ── API ──────────────────────────────────────────────────────────────────────
+def _claude_http(api_key, mensagens, system_prompt="", max_tokens=8000):
+    """Chamada crua à API — thread-safe (NÃO usa st.*). Retorna texto ou None."""
+    if not api_key:
+        return None
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-sonnet-4-6", "max_tokens": max_tokens,
+                  "system": system_prompt, "messages": mensagens},
+            timeout=180
+        )
+        result = resp.json()
+    except Exception:
+        return None
+    if "content" not in result:
+        return None
+    return result["content"][0]["text"]
+
 def chamar_claude(mensagens, system_prompt="", max_tokens=8000):
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         st.error("Chave de API não configurada! Vá em Settings → Secrets.")
         return None
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-        json={"model": "claude-sonnet-4-6", "max_tokens": max_tokens,
-              "system": system_prompt, "messages": mensagens},
-        timeout=180
-    )
-    result = resp.json()
-    if "content" not in result:
-        st.error(f"Erro API: {result}")
-        return None
-    return result["content"][0]["text"]
+    texto = _claude_http(api_key, mensagens, system_prompt, max_tokens)
+    if texto is None:
+        st.error("Erro API: a IA não respondeu (timeout ou resposta inválida).")
+    return texto
 
 # ── JSON Parser robusto ───────────────────────────────────────────────────────
 def extrair_json(texto):
@@ -464,7 +475,9 @@ def recalcular_resumo_horas(dados, config):
     return linhas
 
 def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
-    """Manda os erros concretos de volta pra IA, semana a semana, até a escala ficar válida."""
+    """Manda os erros concretos de volta pra IA, semana a semana (TODAS em paralelo), até ficar válida."""
+    import concurrent.futures
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     reg = config.get("regras_especiais", {})
     ctx = (
         f"Subgrupos e alunos:\n{json.dumps(config.get('alunos_por_sg', {}), ensure_ascii=False)}\n\n"
@@ -476,6 +489,7 @@ def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
         if val["ok"]:
             break
         det = dados.get("escala_detalhada") or []
+        tarefas = {}  # semana -> mensagem de correção
         for sem in val["semanas_ruins"]:
             entradas_sem = [e for e in det if e.get("semana") == sem]
             est = [e for e in val["estouros"] if e["semana"] == sem]
@@ -498,22 +512,30 @@ def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
                     continue
                 aus_vistos.add(a["servico"])
                 problemas.append(f"- O serviço '{a['servico']}' (bloco {a['bloco']}) ficou SEM ninguém — divida os alunos do bloco entre os serviços (revezamento), parte aqui e parte nos outros")
-            msg = (
+            tarefas[sem] = (
                 f"{ctx}\n\nSEMANA {sem} — VIOLAÇÕES A CORRIGIR:\n" + "\n".join(problemas) +
                 f"\n\nENTRADAS ATUAIS DESTA SEMANA (corrija e devolva TODAS):\n" +
                 json.dumps(entradas_sem, ensure_ascii=False)
             )
-            resp = chamar_claude(
-                [{"role": "user", "content": msg}],
-                system_prompt=SYSTEM_CORRIGIR.format(limite=val["limite"]),
-                max_tokens=8000,
-            )
-            novas = (extrair_json(resp) or {}).get("escala_detalhada") if resp else None
-            if novas:
-                for e in novas:
-                    e["semana"] = sem  # garante que a semana volte correta
-                det = [e for e in det if e.get("semana") != sem] + novas
-                dados["escala_detalhada"] = det
+        if not tarefas:
+            break
+        sysp = SYSTEM_CORRIGIR.format(limite=val["limite"])
+        novas_por_sem = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(tarefas))) as ex:
+            futuros = {ex.submit(_claude_http, api_key, [{"role": "user", "content": tarefas[sem]}], sysp, 8000): sem
+                       for sem in tarefas}
+            for fut in concurrent.futures.as_completed(futuros):
+                sem = futuros[fut]
+                novas = (extrair_json(fut.result()) or {}).get("escala_detalhada")
+                if novas:
+                    for e in novas:
+                        e["semana"] = sem
+                    novas_por_sem[sem] = novas
+        if not novas_por_sem:
+            break
+        for sem, novas in novas_por_sem.items():
+            det = [e for e in det if e.get("semana") != sem] + novas
+        dados["escala_detalhada"] = det
         dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
 
     try:
@@ -526,13 +548,14 @@ def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
     return dados, validar_escala(dados, config)
 
 def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config, num_semanas, ui=True):
-    """Gera a escala_detalhada UMA semana por vez, evitando que a resposta da IA seja truncada."""
+    """Gera a escala_detalhada por semana, TODAS em paralelo (rápido) e sem truncar a resposta."""
+    import concurrent.futures
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     limite = config.get("regras_especiais", {}).get("limite_ch", 40)
-    todas = []
-    barra = st.progress(0.0, text="Gerando escala detalhada semana a semana...") if ui else None
     n = max(int(num_semanas), 1)
-    for sem in range(1, n + 1):
-        msg = (
+
+    def _msg(sem):
+        return (
             f"Briefing:\n{briefing}\n\n"
             f"Calendário de rodízio (todas as semanas):\n{calendario_json}\n\n"
             f"Alunos por subgrupo:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\n"
@@ -541,16 +564,27 @@ def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config,
             f"ninguém passar de {limite}h. Respeite o mín/máx por turno e divida os alunos entre os "
             f"serviços de cada bloco. NÃO gere outras semanas."
         )
-        resp = chamar_claude([{"role": "user", "content": msg}], system_prompt=SYSTEM_DETALHE, max_tokens=8000)
-        novas = (extrair_json(resp) or {}).get("escala_detalhada") if resp else None
-        if novas:
-            for e in novas:
-                e["semana"] = sem
-            todas.extend(novas)
-        if barra:
-            barra.progress(sem / n, text=f"Escala detalhada: semana {sem}/{n} ({len(todas)} entradas)")
+
+    resultados, feitos = {}, 0
+    barra = st.progress(0.0, text="Gerando escala detalhada (semanas em paralelo)...") if ui else None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, n)) as ex:
+        futuros = {ex.submit(_claude_http, api_key, [{"role": "user", "content": _msg(sem)}],
+                             SYSTEM_DETALHE, 8000): sem for sem in range(1, n + 1)}
+        for fut in concurrent.futures.as_completed(futuros):
+            sem = futuros[fut]
+            novas = (extrair_json(fut.result()) or {}).get("escala_detalhada")
+            if novas:
+                for e in novas:
+                    e["semana"] = sem
+                resultados[sem] = novas
+            feitos += 1
+            if barra:
+                barra.progress(feitos / n, text=f"Escala detalhada: {feitos}/{n} semanas prontas")
     if barra:
         barra.empty()
+    todas = []
+    for sem in range(1, n + 1):
+        todas.extend(resultados.get(sem, []))
     return todas
 
 def mostrar_validacao(val):
