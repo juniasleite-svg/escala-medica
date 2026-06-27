@@ -489,26 +489,6 @@ def _mostrar_resultado(resposta_raw, esp, grupo, turma):
                     mime="text/csv",
                     use_container_width=True
                 )
-        except Exception as e_excel:
-            st.warning(f"Excel simplificado (erro no gerador completo: {e_excel})")
-            import openpyxl, io as io2
-            from openpyxl.styles import Font, PatternFill, Alignment
-            wb2 = openpyxl.Workbook()
-            ws2 = wb2.active
-            ws2.title = "Resumo de Horas"
-            if dados.get("resumo_horas"):
-                for i, h in enumerate(["SG","Nome","Total"], 1):
-                    ws2.cell(row=1,column=i,value=h).font = Font(bold=True)
-                for ri, r in enumerate(dados["resumo_horas"]):
-                    ws2.cell(row=ri+2,column=1,value=str(r.get("sg","")))
-                    ws2.cell(row=ri+2,column=2,value=r.get("nome",""))
-                    ws2.cell(row=ri+2,column=3,value=r.get("total_horas",""))
-            out2 = io2.BytesIO()
-            wb2.save(out2); out2.seek(0)
-            st.download_button("📥 Baixar Excel (simplificado)", data=out2.read(),
-                file_name=f"Escala_{esp}_{grupo}_{turma}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True)
 
     except json.JSONDecodeError:
         st.subheader("📄 Resposta da IA (texto)")
