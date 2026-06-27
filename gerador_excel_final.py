@@ -357,6 +357,7 @@ def _aba_alunos(wb, titulo, alunos_por_sg, config):
     for i, h in enumerate(["Nº","SG","Nome Completo","RA","Turma","Par"],1):
         _cel(ws, 2, i, h, bold=True, bg=C["H2"], fc="FFFFFF", sz=9)
 
+    ra_map = config.get("ra_por_aluno", {}) or {}
     row = 3; num = 1
     for sg_key in sorted(alunos_por_sg.keys(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
         sg_num = int(sg_key) if sg_key.isdigit() else 1
@@ -366,7 +367,7 @@ def _aba_alunos(wb, titulo, alunos_por_sg, config):
             _cel(ws, row, 1, num, bg=cor_row, sz=9)
             _cel(ws, row, 2, f"SG{sg_num}", bold=True, bg=cor, sz=9)
             _cel(ws, row, 3, nome, halign="left", bg=cor_row, sz=9)
-            _cel(ws, row, 4, "", bg=cor_row, sz=9)  # RA
+            _cel(ws, row, 4, str(ra_map.get(str(nome).strip(), "")), bg=cor_row, sz=9)  # RA
             _cel(ws, row, 5, turma, bg=cor_row, sz=9)
             _cel(ws, row, 6, "", bg=cor_row, sz=9)  # Par
             num += 1; row += 1

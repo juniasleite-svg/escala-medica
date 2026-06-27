@@ -45,6 +45,20 @@ def chamar_claude(mensagens, system_prompt="", max_tokens=8000):
         st.error("Erro API: a IA não respondeu (timeout ou resposta inválida).")
     return texto
 
+def _ler_subgrupos(df_f):
+    """Lê um recorte da planilha de alunos -> ({sg: [nomes]}, {nome: RA})."""
+    apsg, ra = {}, {}
+    for sg_num in sorted(df_f["Sub Grupo"].dropna().unique()):
+        sub = df_f[df_f["Sub Grupo"] == sg_num]
+        nomes = [str(x).strip() for x in sub["Nome Completo"].tolist() if str(x).strip()]
+        apsg[str(int(sg_num))] = nomes
+        if "RA" in sub.columns:
+            for _, rr in sub.iterrows():
+                nm = str(rr["Nome Completo"]).strip()
+                if nm:
+                    ra[nm] = str(rr.get("RA", "") or "").strip()
+    return apsg, ra
+
 # ── JSON Parser robusto ───────────────────────────────────────────────────────
 def extrair_json(texto):
     import re
@@ -461,6 +475,7 @@ def recalcular_resumo_horas(dados, config):
             if tk == "cind":
                 cind[al] += 1
     rh_old = {r.get("nome", ""): r for r in (dados.get("resumo_horas") or [])}
+    ra_map = config.get("ra_por_aluno", {}) or {}
     nomes_todos = list(aluno_sg.keys()) or list(hs.keys())
     linhas = []
     for al in nomes_todos:
@@ -468,7 +483,7 @@ def recalcular_resumo_horas(dados, config):
         base = dict(rh_old.get(al, {}))
         base.update({
             "sg": aluno_sg.get(al, "") or base.get("sg", ""),
-            "nome": al, "ra": base.get("ra", ""),
+            "nome": al, "ra": ra_map.get(al) or base.get("ra", ""),
             "total_horas": round(sum(semanas), 1),
             "semanas": semanas,
             "cinderelas": cind.get(al, base.get("cinderelas", 0)),
@@ -785,7 +800,9 @@ def gerar_detalhada_python(calendario, config):
                 ocupado = {}  # (dia3,turno_key) -> set
                 for (data, dia3, tn, tk, hor, hrs, qtd) in _slots_servico(s, datas):
                     chosen = []
-                    for cap in (limite, limite_abs, float("inf")):
+                    # Nunca força além do limite absoluto: se faltar gente, deixa o turno incompleto
+                    # (o validador avisa) em vez de estourar a carga horária do aluno.
+                    for cap in (limite, limite_abs):
                         for n in sorted(nomes, key=lambda x: horas_aluno[x]):
                             if len(chosen) >= qtd:
                                 break
@@ -1063,6 +1080,9 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
                     if dados:
                         # Salvar no session_state para pré-preencher o formulário
                         st.session_state.prefill = dados
+                        # Limpa o cache das caixas de alunos (evita mostrar valores antigos/vazios)
+                        for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("sg_imp_")]:
+                            del st.session_state[_k]
                         # Se tiver base de alunos, tentar carregar também
                         if arquivo_alunos_imp:
                             st.session_state.prefill["_arquivo_alunos"] = True
@@ -1119,8 +1139,12 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
     if pf.get("alunos_por_sg"):
         st.caption("✏️ Alunos importados — edite se necessário:")
         for sg, nomes in sorted(pf["alunos_por_sg"].items(), key=lambda x: int(x[0])):
-            with st.expander(f"SG{sg} — {len(nomes)} alunos", expanded=False):
-                txt = st.text_area(f"Alunos SG{sg}", value="\n".join(nomes), key=f"sg_imp_{sg}", height=100)
+            k = f"sg_imp_{sg}"
+            if k not in st.session_state:  # semeia com os nomes importados (1ª vez)
+                st.session_state[k] = "\n".join(nomes)
+            atual = [n.strip() for n in st.session_state[k].split("\n") if n.strip()]
+            with st.expander(f"SG{sg} — {len(atual)} alunos", expanded=False):
+                txt = st.text_area(f"Alunos SG{sg}", key=k, height=100)
                 alunos_por_sg[sg] = [n.strip() for n in txt.strip().split("\n") if n.strip()]
 
         # Opção de recarregar com outra opção de SGs
@@ -1143,12 +1167,15 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
                                 op = next((o for o in df_r["OPÇÃO"].dropna().unique() if f"{n_alvo} SG" in str(o)), None)
                                 if op:
                                     df_f = df_r[df_r["OPÇÃO"]==op]
-                                    novos = {str(int(s)): df_f[df_f["Sub Grupo"]==s]["Nome Completo"].tolist()
-                                             for s in sorted(df_f["Sub Grupo"].dropna().unique())}
+                                    novos, ra_map = _ler_subgrupos(df_f)
                                     pf["alunos_por_sg"] = novos
                                     pf["num_sg"] = n_alvo
                                     st.session_state.prefill = pf
-                                    st.success(f"✅ {n_alvo} SGs carregados!")
+                                    st.session_state["ra_por_aluno"] = ra_map
+                                    # limpa cache das caixas para refletir os novos alunos/SGs
+                                    for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("sg_imp_")]:
+                                        del st.session_state[_k]
+                                    st.success(f"✅ {n_alvo} SGs carregados ({sum(len(v) for v in novos.values())} alunos, com RA)!")
                                     st.rerun()
                     except Exception as e:
                         st.error(f"Erro: {e}")
@@ -1165,10 +1192,9 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
                     opcoes = df_g["OPÇÃO"].dropna().unique()
                     opcao_sel = st.selectbox("Opção de subgrupos", opcoes)
                     df_f = df_g[df_g["OPÇÃO"] == opcao_sel]
-                    for sg_num in sorted(df_f["Sub Grupo"].dropna().unique()):
-                        nomes = df_f[df_f["Sub Grupo"]==sg_num]["Nome Completo"].tolist()
-                        alunos_por_sg[str(int(sg_num))] = nomes
-                    st.success(f"✅ {len(df_f)} alunos em {len(alunos_por_sg)} SGs")
+                    alunos_por_sg, ra_map = _ler_subgrupos(df_f)
+                    st.session_state["ra_por_aluno"] = ra_map
+                    st.success(f"✅ {len(df_f)} alunos em {len(alunos_por_sg)} SGs (com RA)")
         except Exception as e:
             st.error(f"Erro: {e}")
 
@@ -1534,10 +1560,17 @@ with st.expander("📊 Bloco 6 — Formato do Excel", expanded=False):
 # ── GERAR ────────────────────────────────────────────────────────────────────
 st.divider()
 if st.button("🚀 Gerar Escala com IA", type="primary", use_container_width=True):
+    # Subgrupos esperados que estão sem alunos
+    sgs_vazios = [str(i) for i in range(1, int(num_sg) + 1)
+                  if not alunos_por_sg.get(str(i))]
     if not especialidade or not turma or not grupo:
         st.error("Preencha Especialidade, Turma e Grupo!")
     elif not alunos_por_sg:
         st.error("Adicione os alunos!")
+    elif sgs_vazios:
+        st.error(f"⚠️ Os subgrupos {', '.join('SG'+s for s in sgs_vazios)} estão SEM alunos. "
+                 f"Preencha todos os {int(num_sg)} subgrupos no Bloco 2 antes de gerar "
+                 f"(senão a escala fica incompleta e com carga horária errada).")
     elif not rodizio_desc:
         st.error("Descreva o rodízio!")
     else:
@@ -1620,6 +1653,7 @@ Extras: {regras_extras}
             "grupo": grupo, "turma": turma,
             "data_inicio": str(data_inicio), "num_semanas": int(num_semanas),
             "locais": locais, "alunos_por_sg": alunos_por_sg,
+            "ra_por_aluno": st.session_state.get("ra_por_aluno", {}),
             "rodizio_desc": rodizio_desc,
             "regras_especiais": {"quinta": regra_quinta, "terca": regra_terca,
                 "limite_ch": int(limite_ch), "limite_abs": int(limite_abs), "fds": regra_fds},
