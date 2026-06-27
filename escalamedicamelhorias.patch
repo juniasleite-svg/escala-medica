@@ -1,0 +1,479 @@
+From 97b9c796d2d96fe6c70cc98151838fbe6d2090f3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 27 Jun 2026 21:38:17 +0000
+Subject: [PATCH] Valida CH de verdade + auto-correcao e agrupa local na aba
+ por servico
+
+Validacao (o Python e o juiz, nao a IA):
+- validar_escala: soma horas reais por aluno/semana, detecta estouro de CH,
+  aluno em 2 locais no mesmo dia/turno e dias sem cobertura (respeitando bloqueios)
+- recalcular_resumo_horas: resumo de horas a partir da escala real
+- corrigir_escala_loop: manda os erros concretos de volta a IA semana a semana
+  ate ficar dentro de 40h/sem, sem perder cobertura
+- Tela mostra a validacao real e botao "Rebalancear automaticamente";
+  auto-correcao tambem roda no fluxo de geracao
+
+Aba "Escala por Servico":
+- Nome do local escrito uma unica vez, como faixa vertical mesclada a esquerda,
+  com os turnos (Manha/Tarde/Cinderela) divididos abaixo (sem duplicar)
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_014aXf81s8cAfR72FpJyEVeQ
+---
+ .gitignore             |   2 +
+ app.py                 | 330 +++++++++++++++++++++++++++++++++++++----
+ gerador_excel_final.py |  32 ++--
+ 3 files changed, 326 insertions(+), 38 deletions(-)
+ create mode 100644 .gitignore
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..7a60b85
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++__pycache__/
++*.pyc
+diff --git a/app.py b/app.py
+index bd939ff..506239c 100644
+--- a/app.py
++++ b/app.py
+@@ -170,6 +170,280 @@ Formato:
+   ]
+ }"""
+ 
++SYSTEM_CORRIGIR = """Você é um especialista em escalas de internato médico.
++Recebeu as entradas de UMA SEMANA de uma escala que VIOLA o limite de carga horária semanal
++e/ou tem aluno em dois locais ao mesmo tempo. Reescreva as entradas dessa semana corrigindo
++TODAS as violações, SEM perder cobertura de nenhum local/turno.
++
++COMO CORRIGIR (essencial):
++- Um aluno NÃO pode fazer manhã + tarde + cinderela todos os dias — isso estoura a carga horária.
++- DISTRIBUA (revezamento) os turnos ENTRE os alunos do mesmo subgrupo/serviço: parte do grupo
++  cobre a manhã, outra parte cobre a tarde, alternando ao longo da semana, de forma que CADA
++  aluno fique com no máximo {limite}h na semana.
++- TODOS os locais/turnos que já apareciam devem continuar cobertos — não deixe nenhum vazio.
++- Um aluno só pode estar em UM local por dia/turno.
++- Não tire ninguém do seu bloco/serviço — apenas redistribua os turnos entre os alunos.
++- Mantenha as mesmas datas, dias, locais, horários e o campo "horas" de cada turno.
++
++Responda APENAS com JSON válido, sem texto antes ou depois:
++{{"escala_detalhada": [ ...todas as entradas corrigidas SOMENTE desta semana... ]}}"""
++
++# ── Validação determinística — o Python é o juiz (não a IA) ───────────────────
++import re as _re_val
++from collections import defaultdict as _dd
++
++DIAS_UTEIS = ["Seg", "Ter", "Qua", "Qui", "Sex"]
++
++def _dia_curto(d):
++    d = str(d or "").strip()
++    dl = d.lower()
++    mapa = {"segunda": "Seg", "terça": "Ter", "terca": "Ter", "quarta": "Qua",
++            "quinta": "Qui", "sexta": "Sex", "sábado": "Sab", "sabado": "Sab", "domingo": "Dom"}
++    for k, v in mapa.items():
++        if dl.startswith(k):
++            return v
++    if d[:3].capitalize() in ("Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"):
++        return d[:3].capitalize()
++    return d
++
++def _turno_key(t):
++    t = str(t or "").lower()
++    if "manh" in t:
++        return "manha"
++    if "tard" in t:
++        return "tarde"
++    if "cind" in t or "cinder" in t:
++        return "cind"
++    if "fds" in t:
++        return "fds"
++    return t.strip()
++
++def _horas_entrada(e):
++    """Horas reais de um turno: usa o campo 'horas', senão deriva do horário, senão do turno."""
++    try:
++        h = float(e.get("horas"))
++        if h > 0:
++            return h
++    except (TypeError, ValueError):
++        pass
++    nums = _re_val.findall(r"(\d{1,2})", str(e.get("horario", "")))
++    if len(nums) >= 2:
++        try:
++            ini, fim = int(nums[0]), int(nums[1])
++            if fim > ini:
++                return float(fim - ini)
++        except ValueError:
++            pass
++    return {"manha": 6.0, "tarde": 6.0, "cind": 4.0, "fds": 6.0}.get(_turno_key(e.get("turno")), 0.0)
++
++def _alunos_entrada(e):
++    a = e.get("alunos")
++    if isinstance(a, list) and a:
++        return [str(x).strip() for x in a if str(x).strip()]
++    nome = e.get("nome")
++    if isinstance(nome, str) and nome.strip():
++        return [nome.strip()]
++    return []
++
++def _bloqueios_map(config):
++    """Mapa de bloqueios -> {turno_key: {(local_lower, dia_curto)}} para não acusar buraco onde há bloqueio."""
++    blk = _dd(set)
++    for loc in config.get("locais", []):
++        servs = [loc] + (loc.get("servicos_extras") or [])
++        for s in servs:
++            nomes = {str(s.get("nome", "")).strip().lower(),
++                     str(s.get("abrev", "")).strip().lower(),
++                     str(loc.get("nome_bloco", "")).strip().lower()}
++            nomes = {n for n in nomes if n}
++            for b in (s.get("bloqueios_manha") or []):
++                if str(b.get("tipo", "")).lower().startswith("sem"):
++                    for n in nomes:
++                        blk["manha"].add((n, _dia_curto(b.get("dia"))))
++            for b in (s.get("bloqueios_tarde") or []):
++                if str(b.get("tipo", "")).lower().startswith("sem"):
++                    for n in nomes:
++                        blk["tarde"].add((n, _dia_curto(b.get("dia"))))
++    return blk
++
++def validar_escala(dados, config):
++    """Confere a escala_detalhada de verdade: horas/semana, conflitos e cobertura."""
++    det = dados.get("escala_detalhada") or []
++    reg = config.get("regras_especiais", {})
++    limite = int(reg.get("limite_ch", 40))
++    limite_abs = int(reg.get("limite_abs", 43))
++    regra_quinta = str(reg.get("quinta", "")).lower()
++
++    horas = _dd(float)   # (aluno, semana) -> horas
++    ocup = _dd(set)      # (aluno, semana, dia, turno) -> {locais}
++    cob = _dd(set)       # (local, turno, semana) -> {dias}
++
++    for e in det:
++        sem = e.get("semana", "?")
++        dia = _dia_curto(e.get("dia") or e.get("data"))
++        turno = _turno_key(e.get("turno"))
++        local = str(e.get("local", "?"))
++        h = _horas_entrada(e)
++        for al in _alunos_entrada(e):
++            horas[(al, sem)] += h
++            ocup[(al, sem, dia, turno)].add(local)
++        cob[(local, turno, sem)].add(dia)
++
++    estouros = []
++    for (al, sem), h in horas.items():
++        if h > limite_abs:
++            estouros.append({"aluno": al, "semana": sem, "horas": round(h, 1), "limite": limite_abs, "nivel": "absoluto"})
++        elif h > limite:
++            estouros.append({"aluno": al, "semana": sem, "horas": round(h, 1), "limite": limite, "nivel": "padrao"})
++    estouros.sort(key=lambda x: -x["horas"])
++
++    conflitos = []
++    for (al, sem, dia, turno), locs in ocup.items():
++        if len(locs) > 1:
++            conflitos.append({"aluno": al, "semana": sem, "dia": dia, "turno": turno, "locais": sorted(locs)})
++
++    blk = _bloqueios_map(config)
++    buracos = []
++    for (local, turno, sem), dias in cob.items():
++        if turno in ("cind", "fds"):
++            continue
++        ll = local.lower()
++        falt = []
++        for d in DIAS_UTEIS:
++            if d in dias:
++                continue
++            if (ll, d) in blk.get(turno, set()):
++                continue
++            if d == "Qui" and turno == "tarde" and "sem tarde" in regra_quinta:
++                continue
++            falt.append(d)
++        if falt:
++            buracos.append({"local": local, "turno": turno, "semana": sem, "dias": falt})
++
++    semanas_ruins = sorted({e["semana"] for e in estouros} | {c["semana"] for c in conflitos},
++                           key=lambda x: int(x) if str(x).isdigit() else 999)
++    return {
++        "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
++        "limite": limite, "limite_abs": limite_abs,
++        "ok": (not estouros and not conflitos),
++        "semanas_ruins": semanas_ruins,
++    }
++
++def recalcular_resumo_horas(dados, config):
++    """Recalcula o resumo de horas a partir da escala_detalhada real (não confia no que a IA declarou)."""
++    det = dados.get("escala_detalhada") or []
++    alunos_sg = config.get("alunos_por_sg", {})
++    aluno_sg = {}
++    for sg, nomes in alunos_sg.items():
++        for n in nomes:
++            aluno_sg[str(n).strip()] = sg
++    num_sem = int(config.get("num_semanas", 8))
++    hs = _dd(lambda: _dd(float))
++    cind = _dd(int)
++    for e in det:
++        h = _horas_entrada(e)
++        tk = _turno_key(e.get("turno"))
++        try:
++            sem = int(e.get("semana"))
++        except (TypeError, ValueError):
++            continue
++        for al in _alunos_entrada(e):
++            hs[al][sem] += h
++            if tk == "cind":
++                cind[al] += 1
++    rh_old = {r.get("nome", ""): r for r in (dados.get("resumo_horas") or [])}
++    nomes_todos = list(aluno_sg.keys()) or list(hs.keys())
++    linhas = []
++    for al in nomes_todos:
++        semanas = [round(hs[al].get(i + 1, 0.0), 1) for i in range(num_sem)]
++        base = dict(rh_old.get(al, {}))
++        base.update({
++            "sg": aluno_sg.get(al, "") or base.get("sg", ""),
++            "nome": al, "ra": base.get("ra", ""),
++            "total_horas": round(sum(semanas), 1),
++            "semanas": semanas,
++            "cinderelas": cind.get(al, base.get("cinderelas", 0)),
++        })
++        linhas.append(base)
++
++    def _sg_ord(r):
++        s = str(r.get("sg", "")).strip()
++        return (int(s) if s.isdigit() else 99, r.get("nome", ""))
++    linhas.sort(key=_sg_ord)
++    return linhas
++
++def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
++    """Manda os erros concretos de volta pra IA, semana a semana, até a escala ficar válida."""
++    reg = config.get("regras_especiais", {})
++    ctx = (
++        f"Subgrupos e alunos:\n{json.dumps(config.get('alunos_por_sg', {}), ensure_ascii=False)}\n\n"
++        f"Regras: Limite {reg.get('limite_ch', 40)}h/semana por aluno (absoluto {reg.get('limite_abs', 43)}h). "
++        f"Quinta: {reg.get('quinta', '')}. Terça: {reg.get('terca', '')}. FDS: {reg.get('fds', '')}."
++    )
++    for _ in range(max_rodadas):
++        val = validar_escala(dados, config)
++        if val["ok"]:
++            break
++        det = dados.get("escala_detalhada") or []
++        for sem in val["semanas_ruins"]:
++            entradas_sem = [e for e in det if e.get("semana") == sem]
++            est = [e for e in val["estouros"] if e["semana"] == sem]
++            con = [c for c in val["conflitos"] if c["semana"] == sem]
++            if not entradas_sem or (not est and not con):
++                continue
++            problemas = []
++            for e in est:
++                problemas.append(f"- {e['aluno']}: {e['horas']}h nesta semana (limite {val['limite']}h) — reduza para no máximo {val['limite']}h")
++            for c in con:
++                problemas.append(f"- {c['aluno']}: em 2 locais no mesmo {c['dia']}/{c['turno']} ({', '.join(c['locais'])}) — deixe em apenas um")
++            msg = (
++                f"{ctx}\n\nSEMANA {sem} — VIOLAÇÕES A CORRIGIR:\n" + "\n".join(problemas) +
++                f"\n\nENTRADAS ATUAIS DESTA SEMANA (corrija e devolva TODAS):\n" +
++                json.dumps(entradas_sem, ensure_ascii=False)
++            )
++            resp = chamar_claude(
++                [{"role": "user", "content": msg}],
++                system_prompt=SYSTEM_CORRIGIR.format(limite=val["limite"]),
++                max_tokens=8000,
++            )
++            novas = (extrair_json(resp) or {}).get("escala_detalhada") if resp else None
++            if novas:
++                for e in novas:
++                    e["semana"] = sem  # garante que a semana volte correta
++                det = [e for e in det if e.get("semana") != sem] + novas
++                dados["escala_detalhada"] = det
++        dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
++
++    try:
++        dados["escala_detalhada"].sort(
++            key=lambda e: (int(e.get("semana", 0)) if str(e.get("semana", "")).isdigit() else 0, str(e.get("data", "")))
++        )
++    except Exception:
++        pass
++    dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
++    return dados, validar_escala(dados, config)
++
++def mostrar_validacao(val):
++    """Mostra o resultado da validação real na tela."""
++    if val["ok"] and not val["buracos"]:
++        st.success(f"✅ Validação do sistema: todos os alunos ≤ {val['limite']}h/semana, ninguém em 2 lugares ao mesmo tempo e cobertura completa.")
++        return
++    if val["ok"]:
++        st.success(f"✅ Carga horária OK (todos ≤ {val['limite']}h/sem) e sem alunos em 2 lugares ao mesmo tempo.")
++    if val["estouros"]:
++        st.error(f"❌ **{len(val['estouros'])} aluno(s)/semana acima do limite de carga horária:**")
++        for e in val["estouros"][:30]:
++            st.markdown(f"- **{e['aluno']}** — semana {e['semana']}: **{e['horas']}h** (limite {e['limite']}h)")
++        if len(val["estouros"]) > 30:
++            st.caption(f"...e mais {len(val['estouros']) - 30}")
++    if val["conflitos"]:
++        st.error(f"❌ **{len(val['conflitos'])} caso(s) de aluno em 2 locais ao mesmo tempo:**")
++        for c in val["conflitos"][:30]:
++            st.markdown(f"- **{c['aluno']}** — sem {c['semana']}, {c['dia']} {c['turno']}: {', '.join(c['locais'])}")
++    if val["buracos"]:
++        st.warning("⚠️ **Possíveis dias sem cobertura** (confira se não é bloqueio legítimo):")
++        for b in val["buracos"][:30]:
++            st.markdown(f"- {b['local']} / {b['turno']} — sem {b['semana']}: faltam {', '.join(b['dias'])}")
++
+ # ── Mostrar resultado ────────────────────────────────────────────────────────
+ def mostrar_resultado(resposta_raw, esp, grupo, turma):
+     dados = extrair_json(resposta_raw)
+@@ -179,19 +453,34 @@ def mostrar_resultado(resposta_raw, esp, grupo, turma):
+         st.warning("A IA respondeu em formato inesperado. Verifique o conteúdo acima.")
+         return
+ 
++    # ── Validação REAL (o sistema confere de verdade, não a IA) ──────────────
++    config_v = st.session_state.get("config_atual", {})
++    if dados.get("escala_detalhada"):
++        dados["resumo_horas"] = recalcular_resumo_horas(dados, config_v)
++        val = validar_escala(dados, config_v)
++        st.subheader("⚖️ Validação automática (conferida pelo sistema)")
++        mostrar_validacao(val)
++        if not val["ok"]:
++            if st.button("🔧 Rebalancear automaticamente (respeitar 40h/sem)", type="primary", key="btn_rebal"):
++                with st.spinner("Rebalanceando turnos entre os alunos dos subgrupos... ⏳"):
++                    novo, _ = corrigir_escala_loop(dados, config_v, st.session_state.get("briefing_atual", ""))
++                st.session_state.escala_gerada = json.dumps(novo, ensure_ascii=False)
++                st.rerun()
++        st.divider()
++
+     # Confirmação
+     if dados.get("confirmacao"):
+         with st.expander("📋 O que a IA entendeu", expanded=False):
+             st.write(dados["confirmacao"])
+ 
+-    # Auditoria
++    # Observações auto-reportadas pela IA (informativo — a validação acima é a que vale)
+     audit = dados.get("auditoria", {})
+-    if audit.get("aprovado"):
+-        st.success("✅ Auditoria aprovada!")
+-    for err in audit.get("erros", []):
+-        st.error(f"❌ {err}")
+-    for av in audit.get("avisos", []):
+-        st.warning(f"⚠️ {av}")
++    if audit.get("erros") or audit.get("avisos"):
++        with st.expander("🤖 Observações da IA (informativo)", expanded=False):
++            for err in audit.get("erros", []):
++                st.write(f"❌ {err}")
++            for av in audit.get("avisos", []):
++                st.write(f"⚠️ {av}")
+ 
+     # Calendário
+     if dados.get("calendario_rodizio"):
+@@ -947,26 +1236,15 @@ Extras: {regras_extras}
+                 det = dados2.get("escala_detalhada", [])
+                 if det:
+                     dados1["escala_detalhada"] = det
+-
+-                    # Validação de cobertura
+-                    from collections import defaultdict
+-                    cobertura = defaultdict(set)
+-                    for e in det:
+-                        cobertura[(e.get("local",""), e.get("turno",""))].add(e.get("dia",""))
+-
+-                    dias_uteis = {"Seg","Ter","Qua","Qui","Sex"}
+-                    avisos_cob = []
+-                    for (local, turno), dias in cobertura.items():
+-                        faltando = dias_uteis - dias
+-                        # Remover dias que podem ter bloqueio (qui geralmente tem ENAMED)
+-                        faltando_relevante = faltando - {"Qui"}
+-                        if faltando_relevante:
+-                            avisos_cob.append(f"⚠️ {local} / {turno}: sem cobertura em {', '.join(sorted(faltando_relevante))}")
+-
+-                    if avisos_cob:
+-                        st.warning("**Dias sem cobertura detectados:**\n" + "\n".join(avisos_cob))
+-
++                    dados1["resumo_horas"] = recalcular_resumo_horas(dados1, st.session_state.config_atual)
+                     st.success(f"✅ Escala detalhada: {len(det)} entradas")
++
++                    # Validação real + auto-correção (o Python é o juiz)
++                    val0 = validar_escala(dados1, st.session_state.config_atual)
++                    if not val0["ok"]:
++                        n_est, n_con = len(val0["estouros"]), len(val0["conflitos"])
++                        with st.spinner(f"⚖️ Rebalanceando turnos ({n_est} estouro(s) de CH, {n_con} conflito(s))... ⏳"):
++                            dados1, _ = corrigir_escala_loop(dados1, st.session_state.config_atual, briefing)
+                 else:
+                     st.warning("⚠️ Passo 2 não retornou dados. Tente o botão abaixo.")
+             else:
+diff --git a/gerador_excel_final.py b/gerador_excel_final.py
+index f9f4c01..1fedc2a 100644
+--- a/gerador_excel_final.py
++++ b/gerador_excel_final.py
+@@ -941,7 +941,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
+     locais_nomes = list(dict.fromkeys([entry.get("local","") for entry in escala_det if entry.get("local")]))
+ 
+     row = 5
+-    for local in locais_nomes:
++    for li, local in enumerate(locais_nomes):
+         cor_loc = _cor_local(local, locais_cfg)
+ 
+         # Descobrir turnos deste local
+@@ -950,14 +950,17 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
+             if entry.get("local","") == local and entry.get("turno")
+         ]))
+ 
+-        for turno in turnos_local:
+-            # Separador entre blocos
+-            _cel(ws, row, 1, "", bg="D0D9E8"); _cel(ws, row, 2, "", bg="D0D9E8")
+-            for i in range(n_datas): _cel(ws, row, 3+i, "", bg="D0D9E8")
++        # Separador fino entre LOCAIS (não entre turnos) — evita repetir o nome
++        if li > 0:
++            for col in range(1, 3+n_datas):
++                _cel(ws, row, col, "", bg="D0D9E8", border=False)
++            ws.row_dimensions[row].height = 6
+             row += 1
+ 
+-            # Header do turno
+-            _cel(ws, row, 1, local, bold=True, bg=C["H1"], fc="FFFFFF", sz=9)
++        bloco_inicio = row  # 1ª linha do conteúdo deste local (para a faixa lateral)
++
++        for turno in turnos_local:
++            # Header do turno (o nome do local NÃO se repete aqui — vira faixa lateral)
+             for i, dt in enumerate(todas_datas):
+                 eh_fds = dt.weekday() >= 5
+                 eh_ter = dt.weekday() == 1
+@@ -970,7 +973,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
+                 else:
+                     lbl_h = turno.upper()[:5]
+                 _cel(ws, row, 3+i, lbl_h, bold=True, bg=bg_h, fc="FFFFFF" if bg_h not in ["FFCCCC"] else "CC0000", sz=8)
+-            _cel(ws, row, 2, turno[:6], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
++            _cel(ws, row, 2, turno[:8], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
+             row += 1
+ 
+             # Descobrir máx de alunos por turno/dia para este local
+@@ -986,8 +989,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
+ 
+             # Linhas de alunos (slots)
+             for slot in range(max_alunos):
+-                # Linha do nome
+-                _cel(ws, row, 1, "", bg="F2F2F2")
++                # Linha do nome (coluna A fica vazia — pertence à faixa do local)
+                 _cel(ws, row, 2, f"#{slot+1}", bold=True, bg="F2F2F2", sz=8)
+                 for i, dt in enumerate(todas_datas):
+                     eh_fds = dt.weekday() >= 5
+@@ -1014,8 +1016,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
+                 ws.row_dimensions[row].height = 13
+                 row += 1
+ 
+-                # Linha do horário
+-                _cel(ws, row, 1, "", bg="F2F2F2")
++                # Linha do horário (coluna A fica vazia — pertence à faixa do local)
+                 _cel(ws, row, 2, "", bg="F2F2F2")
+                 for i, dt in enumerate(todas_datas):
+                     eh_fds = dt.weekday() >= 5
+@@ -1035,4 +1036,11 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
+                 ws.row_dimensions[row].height = 11
+                 row += 1
+ 
++        # ── Faixa lateral do LOCAL: nome escrito UMA vez, mesclado na vertical ──
++        bloco_fim = row - 1
++        if bloco_fim >= bloco_inicio:
++            ws.merge_cells(start_row=bloco_inicio, start_column=1, end_row=bloco_fim, end_column=1)
++            cel_loc = _cel(ws, bloco_inicio, 1, local, bold=True, bg=cor_loc, fc="1F4E79", sz=11)
++            cel_loc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True, textRotation=90)
++
+     return ws
+-- 
+2.43.0
+

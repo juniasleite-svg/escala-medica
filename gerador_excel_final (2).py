@@ -941,7 +941,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
     locais_nomes = list(dict.fromkeys([entry.get("local","") for entry in escala_det if entry.get("local")]))
 
     row = 5
-    for local in locais_nomes:
+    for li, local in enumerate(locais_nomes):
         cor_loc = _cor_local(local, locais_cfg)
 
         # Descobrir turnos deste local
@@ -950,14 +950,17 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
             if entry.get("local","") == local and entry.get("turno")
         ]))
 
-        for turno in turnos_local:
-            # Separador entre blocos
-            _cel(ws, row, 1, "", bg="D0D9E8"); _cel(ws, row, 2, "", bg="D0D9E8")
-            for i in range(n_datas): _cel(ws, row, 3+i, "", bg="D0D9E8")
+        # Separador fino entre LOCAIS (não entre turnos) — evita repetir o nome
+        if li > 0:
+            for col in range(1, 3+n_datas):
+                _cel(ws, row, col, "", bg="D0D9E8", border=False)
+            ws.row_dimensions[row].height = 6
             row += 1
 
-            # Header do turno
-            _cel(ws, row, 1, local, bold=True, bg=C["H1"], fc="FFFFFF", sz=9)
+        bloco_inicio = row  # 1ª linha do conteúdo deste local (para a faixa lateral)
+
+        for turno in turnos_local:
+            # Header do turno (o nome do local NÃO se repete aqui — vira faixa lateral)
             for i, dt in enumerate(todas_datas):
                 eh_fds = dt.weekday() >= 5
                 eh_ter = dt.weekday() == 1
@@ -970,7 +973,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
                 else:
                     lbl_h = turno.upper()[:5]
                 _cel(ws, row, 3+i, lbl_h, bold=True, bg=bg_h, fc="FFFFFF" if bg_h not in ["FFCCCC"] else "CC0000", sz=8)
-            _cel(ws, row, 2, turno[:6], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
+            _cel(ws, row, 2, turno[:8], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
             row += 1
 
             # Descobrir máx de alunos por turno/dia para este local
@@ -986,8 +989,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
 
             # Linhas de alunos (slots)
             for slot in range(max_alunos):
-                # Linha do nome
-                _cel(ws, row, 1, "", bg="F2F2F2")
+                # Linha do nome (coluna A fica vazia — pertence à faixa do local)
                 _cel(ws, row, 2, f"#{slot+1}", bold=True, bg="F2F2F2", sz=8)
                 for i, dt in enumerate(todas_datas):
                     eh_fds = dt.weekday() >= 5
@@ -1014,8 +1016,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
                 ws.row_dimensions[row].height = 13
                 row += 1
 
-                # Linha do horário
-                _cel(ws, row, 1, "", bg="F2F2F2")
+                # Linha do horário (coluna A fica vazia — pertence à faixa do local)
                 _cel(ws, row, 2, "", bg="F2F2F2")
                 for i, dt in enumerate(todas_datas):
                     eh_fds = dt.weekday() >= 5
@@ -1034,5 +1035,12 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
                     _cel(ws, row, 3+i, hor_c, bg=bg_h, fc="FFFFFF" if bg_h == C["H2"] else "000000", sz=7)
                 ws.row_dimensions[row].height = 11
                 row += 1
+
+        # ── Faixa lateral do LOCAL: nome escrito UMA vez, mesclado na vertical ──
+        bloco_fim = row - 1
+        if bloco_fim >= bloco_inicio:
+            ws.merge_cells(start_row=bloco_inicio, start_column=1, end_row=bloco_fim, end_column=1)
+            cel_loc = _cel(ws, bloco_inicio, 1, local, bold=True, bg=cor_loc, fc="1F4E79", sz=11)
+            cel_loc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True, textRotation=90)
 
     return ws

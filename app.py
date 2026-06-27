@@ -137,144 +137,312 @@ Estrutura obrigatória:
 
 NÃO inclua escala_detalhada nesta resposta — ela será gerada separadamente."""
 
-SYSTEM_DETALHE = ""  # não usado mais — Python preenche os alunos
+SYSTEM_DETALHE = """Você é um especialista em escalas de internato médico.
+Com base no briefing e no calendário de rodízio fornecido, gere APENAS a escala_detalhada.
+Responda APENAS com JSON válido, sem texto antes ou depois.
 
+REGRAS CRÍTICAS — SIGA À RISCA:
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-def _calc_horas(horario_str, default=6):
-    import re as _re
-    m = _re.match(r"(\d+)[h:]?\s*[-–]\s*(\d+)", str(horario_str or ""))
-    if m:
-        h1, h2 = int(m.group(1)), int(m.group(2))
-        diff = (h2 - h1) if h2 >= h1 else (h2 - h1 + 24)
-        return diff if diff > 0 else default
-    return default
+1. COBERTURA OBRIGATÓRIA: Para CADA local, gere UMA entrada para CADA turno em CADA dia útil.
+   - Se o local tem Manhã: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
+   - Se o local tem Tarde: gere entrada para Seg, Ter, Qua, Qui, Sex (exceto bloqueios)
+   - Se o local tem Cinderela: gere entrada para os dias configurados
+   - NÃO pule nenhum dia sem justificativa explícita de bloqueio
 
+2. BLOQUEIOS: Só omita um turno se houver bloqueio explícito no briefing para aquele dia.
+   - "Sem tarde na quinta" → omite APENAS quinta tarde
+   - "Terça tarde 12-16h" → gera tarde de terça com horário reduzido, NÃO omite
+   - NUNCA omita segunda ou terça à tarde sem bloqueio explícito
 
-def gerar_escala_detalhada(config, semanas_datas, calendario_rodizio):
-    """
-    Gera a escala_detalhada completa com Python puro.
-    - config: dict com locais, alunos_por_sg, regras_especiais
-    - semanas_datas: lista de listas de datetime.date (7 dias por semana)
-    - calendario_rodizio: lista de {semana, alocacao: {SG1: "NomeBloco/Serviço", ...}}
-    Retorna lista de slots com alunos preenchidos.
-    """
-    import re as _re2
+3. EXCLUSIVIDADE: Um aluno NUNCA aparece em 2 serviços do mesmo bloco no mesmo turno.
 
-    DIAS_UTEIS = {0: "Seg", 1: "Ter", 2: "Qua", 3: "Qui", 4: "Sex"}
-    DIAS_FDS   = {5: "Sáb", 6: "Dom"}
+4. FORMATO: 1 entrada por (semana + data + local + turno), todos os alunos do SG.
+   - Datas: DD/MM (ex: "06/07")
+   - horas: duração do turno em horas (manhã 6h, tarde 6h, cinderela 4h)
 
-    regras       = config.get("regras_especiais", {})
-    regra_quinta = regras.get("quinta", "")
-    regra_terca  = regras.get("terca", "")
-    quinta_sem_tarde     = "enamed" in regra_quinta.lower() or "sem tarde" in regra_quinta.lower()
-    terca_tarde_reduzida = "reduz" in regra_terca.lower() or "encurt" in regra_terca.lower() or "12-16" in regra_terca
+5. VERIFICAÇÃO ANTES DE RESPONDER: Confirme que cada local+turno tem entradas para todos os dias úteis esperados. Se faltar algum, adicione.
 
-    _m = _re2.search(r"\d{1,2}-\d{1,2}h", regra_terca)
-    hor_terca_red = _m.group(0) if _m else "12-16h"
+Formato:
+{
+  "escala_detalhada": [
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Manhã", "horario": "08-12h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]},
+    {"semana": 1, "data": "06/07", "dia": "Seg", "local": "AMB", "turno": "Tarde", "horario": "13-17h", "horas": 4, "sg": 3, "alunos": ["Nome1","Nome2"]}
+  ]
+}"""
 
-    alunos_por_sg = config.get("alunos_por_sg", {})
+SYSTEM_CORRIGIR = """Você é um especialista em escalas de internato médico.
+Recebeu as entradas de UMA SEMANA de uma escala que VIOLA o limite de carga horária semanal
+e/ou tem aluno em dois locais ao mesmo tempo. Reescreva as entradas dessa semana corrigindo
+TODAS as violações, SEM perder cobertura de nenhum local/turno.
 
-    # Monta índice: nome do serviço → lista de SGs que passam por ele
-    # A partir do calendário de rodízio por semana
-    # cal_idx[semana][nome_servico] = [lista de nomes de alunos]
-    cal_idx = {}
-    for entry in calendario_rodizio:
-        sem = int(entry.get("semana", 0))
-        aloc = entry.get("alocacao", {})  # {"SG1": "Enfermaria", "SG2": "PA Mandic", ...}
-        cal_idx[sem] = {}
-        for sg_key, local_nome in aloc.items():
-            # Normaliza chave SG: "SG1" → "1"
-            sg_num = sg_key.replace("SG","").replace("Sg","").strip()
-            nomes = alunos_por_sg.get(sg_num, alunos_por_sg.get(sg_key, []))
-            local_norm = str(local_nome).strip()
-            if local_norm not in cal_idx[sem]:
-                cal_idx[sem][local_norm] = []
-            cal_idx[sem][local_norm].extend(nomes)
+COMO CORRIGIR (essencial):
+- Um aluno NÃO pode fazer manhã + tarde + cinderela todos os dias — isso estoura a carga horária.
+- DISTRIBUA (revezamento) os turnos ENTRE os alunos do mesmo subgrupo/serviço: parte do grupo
+  cobre a manhã, outra parte cobre a tarde, alternando ao longo da semana, de forma que CADA
+  aluno fique com no máximo {limite}h na semana.
+- TODOS os locais/turnos que já apareciam devem continuar cobertos — não deixe nenhum vazio.
+- Um aluno só pode estar em UM local por dia/turno.
+- Não tire ninguém do seu bloco/serviço — apenas redistribua os turnos entre os alunos.
+- Mantenha as mesmas datas, dias, locais, horários e o campo "horas" de cada turno.
 
-    # Expande todos os serviços
-    todos_servicos = []
+Responda APENAS com JSON válido, sem texto antes ou depois:
+{{"escala_detalhada": [ ...todas as entradas corrigidas SOMENTE desta semana... ]}}"""
+
+# ── Validação determinística — o Python é o juiz (não a IA) ───────────────────
+import re as _re_val
+from collections import defaultdict as _dd
+
+DIAS_UTEIS = ["Seg", "Ter", "Qua", "Qui", "Sex"]
+
+def _dia_curto(d):
+    d = str(d or "").strip()
+    dl = d.lower()
+    mapa = {"segunda": "Seg", "terça": "Ter", "terca": "Ter", "quarta": "Qua",
+            "quinta": "Qui", "sexta": "Sex", "sábado": "Sab", "sabado": "Sab", "domingo": "Dom"}
+    for k, v in mapa.items():
+        if dl.startswith(k):
+            return v
+    if d[:3].capitalize() in ("Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"):
+        return d[:3].capitalize()
+    return d
+
+def _turno_key(t):
+    t = str(t or "").lower()
+    if "manh" in t:
+        return "manha"
+    if "tard" in t:
+        return "tarde"
+    if "cind" in t or "cinder" in t:
+        return "cind"
+    if "fds" in t:
+        return "fds"
+    return t.strip()
+
+def _horas_entrada(e):
+    """Horas reais de um turno: usa o campo 'horas', senão deriva do horário, senão do turno."""
+    try:
+        h = float(e.get("horas"))
+        if h > 0:
+            return h
+    except (TypeError, ValueError):
+        pass
+    nums = _re_val.findall(r"(\d{1,2})", str(e.get("horario", "")))
+    if len(nums) >= 2:
+        try:
+            ini, fim = int(nums[0]), int(nums[1])
+            if fim > ini:
+                return float(fim - ini)
+        except ValueError:
+            pass
+    return {"manha": 6.0, "tarde": 6.0, "cind": 4.0, "fds": 6.0}.get(_turno_key(e.get("turno")), 0.0)
+
+def _alunos_entrada(e):
+    a = e.get("alunos")
+    if isinstance(a, list) and a:
+        return [str(x).strip() for x in a if str(x).strip()]
+    nome = e.get("nome")
+    if isinstance(nome, str) and nome.strip():
+        return [nome.strip()]
+    return []
+
+def _bloqueios_map(config):
+    """Mapa de bloqueios -> {turno_key: {(local_lower, dia_curto)}} para não acusar buraco onde há bloqueio."""
+    blk = _dd(set)
     for loc in config.get("locais", []):
-        todos_servicos.append(loc)
-        for srv_extra in loc.get("servicos_extras", []):
-            todos_servicos.append(srv_extra)
+        servs = [loc] + (loc.get("servicos_extras") or [])
+        for s in servs:
+            nomes = {str(s.get("nome", "")).strip().lower(),
+                     str(s.get("abrev", "")).strip().lower(),
+                     str(loc.get("nome_bloco", "")).strip().lower()}
+            nomes = {n for n in nomes if n}
+            for b in (s.get("bloqueios_manha") or []):
+                if str(b.get("tipo", "")).lower().startswith("sem"):
+                    for n in nomes:
+                        blk["manha"].add((n, _dia_curto(b.get("dia"))))
+            for b in (s.get("bloqueios_tarde") or []):
+                if str(b.get("tipo", "")).lower().startswith("sem"):
+                    for n in nomes:
+                        blk["tarde"].add((n, _dia_curto(b.get("dia"))))
+    return blk
 
-    slots = []
-    for s_idx, semana_dias in enumerate(semanas_datas):
-        semana_num = s_idx + 1
-        sem_cal = cal_idx.get(semana_num, {})
+def validar_escala(dados, config):
+    """Confere a escala_detalhada de verdade: horas/semana, conflitos e cobertura."""
+    det = dados.get("escala_detalhada") or []
+    reg = config.get("regras_especiais", {})
+    limite = int(reg.get("limite_ch", 40))
+    limite_abs = int(reg.get("limite_abs", 43))
+    regra_quinta = str(reg.get("quinta", "")).lower()
 
-        for srv in todos_servicos:
-            nome_srv = srv.get("nome", "").strip()
-            if not nome_srv:
+    horas = _dd(float)   # (aluno, semana) -> horas
+    ocup = _dd(set)      # (aluno, semana, dia, turno) -> {locais}
+    cob = _dd(set)       # (local, turno, semana) -> {dias}
+
+    for e in det:
+        sem = e.get("semana", "?")
+        dia = _dia_curto(e.get("dia") or e.get("data"))
+        turno = _turno_key(e.get("turno"))
+        local = str(e.get("local", "?"))
+        h = _horas_entrada(e)
+        for al in _alunos_entrada(e):
+            horas[(al, sem)] += h
+            ocup[(al, sem, dia, turno)].add(local)
+        cob[(local, turno, sem)].add(dia)
+
+    estouros = []
+    for (al, sem), h in horas.items():
+        if h > limite_abs:
+            estouros.append({"aluno": al, "semana": sem, "horas": round(h, 1), "limite": limite_abs, "nivel": "absoluto"})
+        elif h > limite:
+            estouros.append({"aluno": al, "semana": sem, "horas": round(h, 1), "limite": limite, "nivel": "padrao"})
+    estouros.sort(key=lambda x: -x["horas"])
+
+    conflitos = []
+    for (al, sem, dia, turno), locs in ocup.items():
+        if len(locs) > 1:
+            conflitos.append({"aluno": al, "semana": sem, "dia": dia, "turno": turno, "locais": sorted(locs)})
+
+    blk = _bloqueios_map(config)
+    buracos = []
+    for (local, turno, sem), dias in cob.items():
+        if turno in ("cind", "fds"):
+            continue
+        ll = local.lower()
+        falt = []
+        for d in DIAS_UTEIS:
+            if d in dias:
                 continue
+            if (ll, d) in blk.get(turno, set()):
+                continue
+            if d == "Qui" and turno == "tarde" and "sem tarde" in regra_quinta:
+                continue
+            falt.append(d)
+        if falt:
+            buracos.append({"local": local, "turno": turno, "semana": sem, "dias": falt})
 
-            # Encontra alunos para este serviço nesta semana
-            # Tenta match exato, depois parcial
-            alunos_semana = sem_cal.get(nome_srv, [])
-            if not alunos_semana:
-                for cal_key, cal_alunos in sem_cal.items():
-                    if (nome_srv.lower() in cal_key.lower() or
-                        cal_key.lower() in nome_srv.lower()):
-                        alunos_semana = cal_alunos
-                        break
+    semanas_ruins = sorted({e["semana"] for e in estouros} | {c["semana"] for c in conflitos},
+                           key=lambda x: int(x) if str(x).isdigit() else 999)
+    return {
+        "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
+        "limite": limite, "limite_abs": limite_abs,
+        "ok": (not estouros and not conflitos),
+        "semanas_ruins": semanas_ruins,
+    }
 
-            # Bloqueios do formulário
-            bloqs_m   = {b["dia"] for b in srv.get("bloqueios_manha", []) if b.get("tipo") == "Sem manhã"}
-            bloqs_t   = {b["dia"] for b in srv.get("bloqueios_tarde", []) if b.get("tipo") == "Sem tarde"}
-            hor_red_m = {b["dia"]: b.get("horario","") for b in srv.get("bloqueios_manha", []) if b.get("tipo") == "Hor. reduzido"}
-            hor_red_t = {b["dia"]: b.get("horario","") for b in srv.get("bloqueios_tarde", []) if b.get("tipo") == "Horário reduzido"}
+def recalcular_resumo_horas(dados, config):
+    """Recalcula o resumo de horas a partir da escala_detalhada real (não confia no que a IA declarou)."""
+    det = dados.get("escala_detalhada") or []
+    alunos_sg = config.get("alunos_por_sg", {})
+    aluno_sg = {}
+    for sg, nomes in alunos_sg.items():
+        for n in nomes:
+            aluno_sg[str(n).strip()] = sg
+    num_sem = int(config.get("num_semanas", 8))
+    hs = _dd(lambda: _dd(float))
+    cind = _dd(int)
+    for e in det:
+        h = _horas_entrada(e)
+        tk = _turno_key(e.get("turno"))
+        try:
+            sem = int(e.get("semana"))
+        except (TypeError, ValueError):
+            continue
+        for al in _alunos_entrada(e):
+            hs[al][sem] += h
+            if tk == "cind":
+                cind[al] += 1
+    rh_old = {r.get("nome", ""): r for r in (dados.get("resumo_horas") or [])}
+    nomes_todos = list(aluno_sg.keys()) or list(hs.keys())
+    linhas = []
+    for al in nomes_todos:
+        semanas = [round(hs[al].get(i + 1, 0.0), 1) for i in range(num_sem)]
+        base = dict(rh_old.get(al, {}))
+        base.update({
+            "sg": aluno_sg.get(al, "") or base.get("sg", ""),
+            "nome": al, "ra": base.get("ra", ""),
+            "total_horas": round(sum(semanas), 1),
+            "semanas": semanas,
+            "cinderelas": cind.get(al, base.get("cinderelas", 0)),
+        })
+        linhas.append(base)
 
-            if quinta_sem_tarde:
-                bloqs_t.add("Qui")
-            if terca_tarde_reduzida and "Ter" not in bloqs_t:
-                hor_red_t["Ter"] = hor_terca_red
+    def _sg_ord(r):
+        s = str(r.get("sg", "")).strip()
+        return (int(s) if s.isdigit() else 99, r.get("nome", ""))
+    linhas.sort(key=_sg_ord)
+    return linhas
 
-            # Dias úteis
-            for dia_idx, data in enumerate(semana_dias[:5]):
-                dia_nome = DIAS_UTEIS[dia_idx]
-                data_str = data.strftime("%d/%m")
+def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
+    """Manda os erros concretos de volta pra IA, semana a semana, até a escala ficar válida."""
+    reg = config.get("regras_especiais", {})
+    ctx = (
+        f"Subgrupos e alunos:\n{json.dumps(config.get('alunos_por_sg', {}), ensure_ascii=False)}\n\n"
+        f"Regras: Limite {reg.get('limite_ch', 40)}h/semana por aluno (absoluto {reg.get('limite_abs', 43)}h). "
+        f"Quinta: {reg.get('quinta', '')}. Terça: {reg.get('terca', '')}. FDS: {reg.get('fds', '')}."
+    )
+    for _ in range(max_rodadas):
+        val = validar_escala(dados, config)
+        if val["ok"]:
+            break
+        det = dados.get("escala_detalhada") or []
+        for sem in val["semanas_ruins"]:
+            entradas_sem = [e for e in det if e.get("semana") == sem]
+            est = [e for e in val["estouros"] if e["semana"] == sem]
+            con = [c for c in val["conflitos"] if c["semana"] == sem]
+            if not entradas_sem or (not est and not con):
+                continue
+            problemas = []
+            for e in est:
+                problemas.append(f"- {e['aluno']}: {e['horas']}h nesta semana (limite {val['limite']}h) — reduza para no máximo {val['limite']}h")
+            for c in con:
+                problemas.append(f"- {c['aluno']}: em 2 locais no mesmo {c['dia']}/{c['turno']} ({', '.join(c['locais'])}) — deixe em apenas um")
+            msg = (
+                f"{ctx}\n\nSEMANA {sem} — VIOLAÇÕES A CORRIGIR:\n" + "\n".join(problemas) +
+                f"\n\nENTRADAS ATUAIS DESTA SEMANA (corrija e devolva TODAS):\n" +
+                json.dumps(entradas_sem, ensure_ascii=False)
+            )
+            resp = chamar_claude(
+                [{"role": "user", "content": msg}],
+                system_prompt=SYSTEM_CORRIGIR.format(limite=val["limite"]),
+                max_tokens=8000,
+            )
+            novas = (extrair_json(resp) or {}).get("escala_detalhada") if resp else None
+            if novas:
+                for e in novas:
+                    e["semana"] = sem  # garante que a semana volte correta
+                det = [e for e in det if e.get("semana") != sem] + novas
+                dados["escala_detalhada"] = det
+        dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
 
-                if srv.get("manha") and dia_nome not in bloqs_m:
-                    hor = hor_red_m.get(dia_nome, srv["manha"])
-                    slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
-                                  "local": nome_srv, "turno": "Manhã", "horario": hor,
-                                  "horas": _calc_horas(hor, 6), "alunos": list(alunos_semana)})
+    try:
+        dados["escala_detalhada"].sort(
+            key=lambda e: (int(e.get("semana", 0)) if str(e.get("semana", "")).isdigit() else 0, str(e.get("data", "")))
+        )
+    except Exception:
+        pass
+    dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
+    return dados, validar_escala(dados, config)
 
-                if srv.get("tarde") and dia_nome not in bloqs_t:
-                    hor = hor_red_t.get(dia_nome, srv["tarde"])
-                    turno_nome = "Tarde reduzida" if dia_nome in hor_red_t else "Tarde"
-                    slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
-                                  "local": nome_srv, "turno": turno_nome, "horario": hor,
-                                  "horas": _calc_horas(hor, 6), "alunos": list(alunos_semana)})
-
-                if srv.get("cinderela") and dia_nome in srv.get("dias_cind", []):
-                    hor = srv["cinderela"]
-                    slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
-                                  "local": nome_srv, "turno": "Cinderela", "horario": hor,
-                                  "horas": _calc_horas(hor, 4), "alunos": list(alunos_semana)})
-
-            # FDS
-            if srv.get("fds"):
-                for dia_idx, data in enumerate(semana_dias[5:], start=5):
-                    dia_nome = DIAS_FDS[dia_idx]
-                    data_str = data.strftime("%d/%m")
-                    if srv.get("fds_manha"):
-                        hor = srv["fds_manha"]
-                        slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
-                                      "local": nome_srv, "turno": "Manhã FDS", "horario": hor,
-                                      "horas": _calc_horas(hor, 5), "alunos": list(alunos_semana)})
-                    if srv.get("fds_tarde"):
-                        hor = srv["fds_tarde"]
-                        slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
-                                      "local": nome_srv, "turno": "Tarde FDS", "horario": hor,
-                                      "horas": _calc_horas(hor, 6), "alunos": list(alunos_semana)})
-                    if srv.get("fds_cind"):
-                        hor = srv["fds_cind"]
-                        slots.append({"semana": semana_num, "data": data_str, "dia": dia_nome,
-                                      "local": nome_srv, "turno": "Cinderela FDS", "horario": hor,
-                                      "horas": _calc_horas(hor, 4), "alunos": list(alunos_semana)})
-    return slots
+def mostrar_validacao(val):
+    """Mostra o resultado da validação real na tela."""
+    if val["ok"] and not val["buracos"]:
+        st.success(f"✅ Validação do sistema: todos os alunos ≤ {val['limite']}h/semana, ninguém em 2 lugares ao mesmo tempo e cobertura completa.")
+        return
+    if val["ok"]:
+        st.success(f"✅ Carga horária OK (todos ≤ {val['limite']}h/sem) e sem alunos em 2 lugares ao mesmo tempo.")
+    if val["estouros"]:
+        st.error(f"❌ **{len(val['estouros'])} aluno(s)/semana acima do limite de carga horária:**")
+        for e in val["estouros"][:30]:
+            st.markdown(f"- **{e['aluno']}** — semana {e['semana']}: **{e['horas']}h** (limite {e['limite']}h)")
+        if len(val["estouros"]) > 30:
+            st.caption(f"...e mais {len(val['estouros']) - 30}")
+    if val["conflitos"]:
+        st.error(f"❌ **{len(val['conflitos'])} caso(s) de aluno em 2 locais ao mesmo tempo:**")
+        for c in val["conflitos"][:30]:
+            st.markdown(f"- **{c['aluno']}** — sem {c['semana']}, {c['dia']} {c['turno']}: {', '.join(c['locais'])}")
+    if val["buracos"]:
+        st.warning("⚠️ **Possíveis dias sem cobertura** (confira se não é bloqueio legítimo):")
+        for b in val["buracos"][:30]:
+            st.markdown(f"- {b['local']} / {b['turno']} — sem {b['semana']}: faltam {', '.join(b['dias'])}")
 
 # ── Mostrar resultado ────────────────────────────────────────────────────────
 def mostrar_resultado(resposta_raw, esp, grupo, turma):
@@ -285,19 +453,34 @@ def mostrar_resultado(resposta_raw, esp, grupo, turma):
         st.warning("A IA respondeu em formato inesperado. Verifique o conteúdo acima.")
         return
 
+    # ── Validação REAL (o sistema confere de verdade, não a IA) ──────────────
+    config_v = st.session_state.get("config_atual", {})
+    if dados.get("escala_detalhada"):
+        dados["resumo_horas"] = recalcular_resumo_horas(dados, config_v)
+        val = validar_escala(dados, config_v)
+        st.subheader("⚖️ Validação automática (conferida pelo sistema)")
+        mostrar_validacao(val)
+        if not val["ok"]:
+            if st.button("🔧 Rebalancear automaticamente (respeitar 40h/sem)", type="primary", key="btn_rebal"):
+                with st.spinner("Rebalanceando turnos entre os alunos dos subgrupos... ⏳"):
+                    novo, _ = corrigir_escala_loop(dados, config_v, st.session_state.get("briefing_atual", ""))
+                st.session_state.escala_gerada = json.dumps(novo, ensure_ascii=False)
+                st.rerun()
+        st.divider()
+
     # Confirmação
     if dados.get("confirmacao"):
         with st.expander("📋 O que a IA entendeu", expanded=False):
             st.write(dados["confirmacao"])
 
-    # Auditoria
+    # Observações auto-reportadas pela IA (informativo — a validação acima é a que vale)
     audit = dados.get("auditoria", {})
-    if audit.get("aprovado"):
-        st.success("✅ Auditoria aprovada!")
-    for err in audit.get("erros", []):
-        st.error(f"❌ {err}")
-    for av in audit.get("avisos", []):
-        st.warning(f"⚠️ {av}")
+    if audit.get("erros") or audit.get("avisos"):
+        with st.expander("🤖 Observações da IA (informativo)", expanded=False):
+            for err in audit.get("erros", []):
+                st.write(f"❌ {err}")
+            for av in audit.get("avisos", []):
+                st.write(f"⚠️ {av}")
 
     # Calendário
     if dados.get("calendario_rodizio"):
@@ -1042,24 +1225,30 @@ Extras: {regras_extras}
             st.session_state.turma_atual = turma
             cal_gerado = json.dumps(dados1.get("calendario_rodizio",[]), ensure_ascii=False)
 
-            # ── Passo 2: Python gera escala_detalhada com base no calendário da IA ──
-            with st.spinner("Passo 2/2 — Gerando escala detalhada... ⏳"):
-                semanas_datas = [
-                    [data_inicio + datetime.timedelta(weeks=s, days=d) for d in range(7)]
-                    for s in range(int(num_semanas))
-                ]
-                config_esc = st.session_state.config_atual.copy()
-                config_esc["locais"] = locais
-                cal_rodizio = dados1.get("calendario_rodizio", [])
-                det = gerar_escala_detalhada(config_esc, semanas_datas, cal_rodizio)
+            with st.spinner("Passo 2/2 — Escala detalhada dia a dia... ⏳"):
+                resp2 = chamar_claude(
+                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário gerado:\n{cal_gerado}\n\nAlunos:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos em TODOS os dias das {num_semanas} semanas."}],
+                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
+                )
 
-            dados1["escala_detalhada"] = det
-            vazios = sum(1 for e in det if not e.get("alunos"))
-            total = len(det)
-            if vazios:
-                st.warning(f"⚠️ {vazios} slots sem alunos (serviço não encontrado no calendário de rodízio). Verifique os nomes dos blocos.")
+            if resp2:
+                dados2 = extrair_json(resp2) or {}
+                det = dados2.get("escala_detalhada", [])
+                if det:
+                    dados1["escala_detalhada"] = det
+                    dados1["resumo_horas"] = recalcular_resumo_horas(dados1, st.session_state.config_atual)
+                    st.success(f"✅ Escala detalhada: {len(det)} entradas")
+
+                    # Validação real + auto-correção (o Python é o juiz)
+                    val0 = validar_escala(dados1, st.session_state.config_atual)
+                    if not val0["ok"]:
+                        n_est, n_con = len(val0["estouros"]), len(val0["conflitos"])
+                        with st.spinner(f"⚖️ Rebalanceando turnos ({n_est} estouro(s) de CH, {n_con} conflito(s))... ⏳"):
+                            dados1, _ = corrigir_escala_loop(dados1, st.session_state.config_atual, briefing)
+                else:
+                    st.warning("⚠️ Passo 2 não retornou dados. Tente o botão abaixo.")
             else:
-                st.success(f"✅ Escala completa: {total} slots gerados com 100% de cobertura!")
+                st.warning("⚠️ Passo 2 falhou (timeout). Tente novamente ou use a correção abaixo.")
 
             st.session_state.escala_gerada = json.dumps(dados1, ensure_ascii=False)
             st.rerun()
@@ -1078,23 +1267,25 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
     if not dados_atual.get("escala_detalhada"):
         st.warning("⚠️ Escala detalhada vazia — as abas Subgrupo e Individual não terão dados.")
         if st.button("🔄 Gerar escala detalhada agora", type="primary"):
-            cfg_fb = st.session_state.get("config_atual", {})
-            try:
-                d0_fb = datetime.date.fromisoformat(cfg_fb.get("data_inicio", str(datetime.date.today())))
-            except:
-                d0_fb = datetime.date.today()
-            n_sem_fb = int(cfg_fb.get("num_semanas", 8))
-            semanas_fb = [[d0_fb + datetime.timedelta(weeks=s, days=d) for d in range(7)] for s in range(n_sem_fb)]
-            cal_fb = dados_atual.get("calendario_rodizio", [])
-            with st.spinner("Gerando escala detalhada..."):
-                det_fb = gerar_escala_detalhada(cfg_fb, semanas_fb, cal_fb)
-            if det_fb:
-                dados_atual["escala_detalhada"] = det_fb
-                st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
-                st.success(f"✅ {len(det_fb)} slots gerados!")
-                st.rerun()
-            else:
-                st.error("Não foi possível gerar. Verifique se o calendário de rodízio foi gerado.")
+            briefing_atual = st.session_state.get("briefing_atual","")
+            cal = json.dumps(dados_atual.get("calendario_rodizio",[]), ensure_ascii=False)
+            alunos_atual = st.session_state.get("config_atual",{}).get("alunos_por_sg",{})
+            n_sem_atual = st.session_state.get("config_atual",{}).get("num_semanas",8)
+            with st.spinner("Gerando escala detalhada... ⏳"):
+                resp_det = chamar_claude(
+                    [{"role": "user", "content": f"Briefing:\n{briefing_atual}\n\nCalendário:\n{cal}\n\nAlunos:\n{json.dumps(alunos_atual, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos nas {n_sem_atual} semanas."}],
+                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
+                )
+            if resp_det:
+                dados2 = extrair_json(resp_det) or {}
+                det = dados2.get("escala_detalhada", [])
+                if det:
+                    dados_atual["escala_detalhada"] = det
+                    st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
+                    st.success(f"✅ {len(det)} entradas geradas!")
+                    st.rerun()
+                else:
+                    st.error("A IA não retornou dados. Tente novamente.")
 
     mostrar_resultado(
         st.session_state.escala_gerada,
