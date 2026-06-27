@@ -130,7 +130,13 @@ SYSTEM_DETALHE = """Você é um especialista em escalas de internato médico.
 Com base no briefing e no calendário de rodízio fornecido, gere APENAS a escala_detalhada.
 Responda APENAS com JSON válido, sem texto antes ou depois.
 
-Formato compacto — 1 linha por (semana+data+local+turno), listando todos os alunos do SG:
+REGRAS CRÍTICAS:
+- Gere UMA entrada por (semana + data + local + turno), listando TODOS os alunos do SG no campo "alunos"
+- Cubra TODOS os dias úteis (Seg-Sex) das 8 semanas + FDS quando houver plantão
+- Datas no formato DD/MM (ex: "06/07")
+- NÃO crie linha por aluno — 1 linha por turno com todos os alunos
+
+Formato obrigatório:
 {
   "escala_detalhada": [
     {"semana": 1, "data": "06/07", "dia": "Seg", "local": "Enf", "turno": "Manhã", "horario": "07-13h", "horas": 6, "sg": 1, "alunos": ["Nome1","Nome2","Nome3"]}
@@ -449,247 +455,194 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
                 alunos_por_sg[str(sg)] = [n.strip() for n in txt.strip().split("\n") if n.strip()]
 
 # BLOCO 3 — Locais
-with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
+with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
     pf_locais = pf.get("locais", [])
     num_locais_def = int(pf.get("num_locais", len(pf_locais) if pf_locais else 3))
-    num_locais = st.number_input("Número de locais", 2, 8, num_locais_def)
+    num_locais = st.number_input("Número de blocos de rodízio", 2, 8, num_locais_def,
+        help="Cada bloco é um local de rodízio que pode conter 1 ou mais serviços vinculados.")
     locais = []
-    for i in range(int(num_locais)):
-        # Pegar dados pré-preenchidos para este local
-        pl = pf_locais[i] if i < len(pf_locais) else {}
-        with st.container():
-            st.markdown(f"### Local {i+1}")
-            col_a, col_b = st.columns(2)
-            with col_a:
-                nome_l = st.text_input("Nome do local", value=pl.get("nome",""), key=f"ln_{i}", placeholder="ex: Enfermaria")
-                abrev_l = st.text_input("Abreviação", value=pl.get("abrev",""), key=f"la_{i}", placeholder="ex: Enf")
-            with col_b:
-                obs_l = st.text_input("Observações gerais", value=pl.get("obs",""), key=f"lobs_{i}", placeholder="ex: FDS feito pelos alunos do Amb")
-                unir = st.checkbox("🔗 Vincular 2º serviço neste bloco", value=bool(pl.get("servico2","")), key=f"lunir_{i}",
-                    help="Ex: Bloco Pediátrico = Enfermaria + PA Mandic no mesmo rodízio")
 
-            # 2º serviço com turnos completos
-            s2 = {}
-            if unir:
-                pl2 = pl.get("servico2_cfg", {})
-                st.markdown("**🔗 2º Serviço vinculado:**")
-                c2a, c2b = st.columns(2)
-                with c2a:
-                    s2_nome = st.text_input("Nome do 2º serviço", value=pl.get("servico2",""), key=f"ln2_{i}", placeholder="ex: PA Mandic")
-                    s2_abrev = st.text_input("Abreviação", value=pl2.get("abrev","PA"), key=f"la2_{i}")
-                with c2b:
-                    s2_obs = st.text_input("Observações", value=pl.get("servico2_obs",""), key=f"lobs2_{i}")
-                    s2_quem = st.text_input("Quem faz?", value=pl2.get("quem",""), key=f"lquem2_{i}",
-                        placeholder="ex: todos os alunos do bloco | apenas SG par")
-                st.markdown("**⏰ Turnos do 2º serviço (dias úteis):**")
-                t2_1, t2_2, t2_3 = st.columns(3)
-                with t2_1:
-                    st.markdown("**🌅 Manhã**")
-                    s2_tem_m = st.checkbox("Tem manhã?", value=bool(pl2.get("manha","")), key=f"s2tm_{i}")
-                    s2_hor_m = st.text_input("Horário", value=pl2.get("manha","07-13h"), key=f"s2hm_{i}") if s2_tem_m else ""
-                    s2_min_m = st.number_input("Mín/dia", 0, 20, int(pl2.get("min_manha",0)), key=f"s2mnm_{i}") if s2_tem_m else 0
-                    s2_max_m = st.number_input("Máx/dia", 0, 20, int(pl2.get("max_manha",4)), key=f"s2mxm_{i}") if s2_tem_m else 0
-                with t2_2:
-                    st.markdown("**🌇 Tarde**")
-                    s2_tem_t = st.checkbox("Tem tarde?", value=bool(pl2.get("tarde","")), key=f"s2tt_{i}")
-                    s2_hor_t = st.text_input("Horário", value=pl2.get("tarde","13-19h"), key=f"s2ht_{i}") if s2_tem_t else ""
-                    s2_min_t = st.number_input("Mín/dia", 0, 20, int(pl2.get("min_tarde",0)), key=f"s2mnt_{i}") if s2_tem_t else 0
-                    s2_max_t = st.number_input("Máx/dia", 0, 20, int(pl2.get("max_tarde",4)), key=f"s2mxt_{i}") if s2_tem_t else 0
-                with t2_3:
-                    st.markdown("**🌙 Cinderela**")
-                    s2_tem_c = st.checkbox("Tem cinderela?", value=bool(pl2.get("cinderela","")), key=f"s2tc_{i}")
-                    s2_hor_c = st.text_input("Horário", value=pl2.get("cinderela","19-23h"), key=f"s2hc_{i}") if s2_tem_c else ""
-                    s2_min_c = st.number_input("Mín/dia", 0, 10, int(pl2.get("min_cind",0)), key=f"s2mnc_{i}") if s2_tem_c else 0
-                    s2_max_c = st.number_input("Máx/dia", 0, 10, int(pl2.get("max_cind",2)), key=f"s2mxc_{i}") if s2_tem_c else 0
-                st.markdown("**🏖️ FDS do 2º serviço:**")
-                s2_tem_fds = st.checkbox("Tem FDS?", value=pl2.get("fds",False), key=f"s2fds_{i}")
-                if s2_tem_fds:
-                    sf1, sf2 = st.columns(2)
-                    with sf1:
-                        s2_hor_fds_m = st.text_input("Manhã FDS", value=pl2.get("fds_manha","07-12h"), key=f"s2fdsm_{i}")
-                        s2_max_fds_m = st.number_input("Máx manhã FDS", 0, 10, int(pl2.get("fds_max_manha",2)), key=f"s2mxfm_{i}")
-                    with sf2:
-                        s2_hor_fds_t = st.text_input("Tarde FDS", value=pl2.get("fds_tarde","13-19h"), key=f"s2fdst_{i}")
-                        s2_max_fds_t = st.number_input("Máx tarde FDS", 0, 10, int(pl2.get("fds_max_tarde",2)), key=f"s2mxft_{i}")
+    def _servico_form(key_prefix, pl_srv, label, expanded=True):
+        """Renderiza formulário de um serviço dentro de um bloco."""
+        with st.expander(f"⚙️ {label}", expanded=expanded):
+            ca, cb, cc = st.columns(3)
+            with ca:
+                nome = st.text_input("Nome", value=pl_srv.get("nome",""), key=f"{key_prefix}_nome", placeholder="ex: Enfermaria")
+                abrev = st.text_input("Abreviação", value=pl_srv.get("abrev",""), key=f"{key_prefix}_abrev", placeholder="ex: Enf")
+            with cb:
+                obs = st.text_input("Observações", value=pl_srv.get("obs",""), key=f"{key_prefix}_obs")
+                quem = st.text_input("Quem faz?", value=pl_srv.get("quem",""), key=f"{key_prefix}_quem",
+                    placeholder="ex: todos | apenas SG par | alunos do Amb")
+            with cc:
+                st.caption("Duração por SG (semanas)")
+                n_sgs_atual = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
+                duracao_sgs = {}
+                pl_dur = pl_srv.get("duracao_por_sg", {})
+                dur_cols = st.columns(min(n_sgs_atual, 4))
+                for sg_idx in range(n_sgs_atual):
+                    sg_num = sg_idx + 1
+                    with dur_cols[sg_idx % 4]:
+                        dur = st.number_input(f"SG{sg_num}", 0, int(num_semanas),
+                            int(pl_dur.get(str(sg_num), 0)), key=f"{key_prefix}_dur_{sg_num}")
+                        if dur > 0: duracao_sgs[str(sg_num)] = int(dur)
+
+            st.markdown("**⏰ Dias Úteis:**")
+            tu1, tu2, tu3 = st.columns(3)
+            with tu1:
+                st.markdown("**🌅 Manhã**")
+                tem_m = st.checkbox("Tem manhã?", value=bool(pl_srv.get("manha","07-13h")), key=f"{key_prefix}_tm")
+                if tem_m:
+                    hor_m = st.text_input("Horário", value=pl_srv.get("manha","07-13h"), key=f"{key_prefix}_hm")
+                    min_m = st.number_input("Mín/dia", 0, 20, int(pl_srv.get("min_manha",0)), key=f"{key_prefix}_mnm")
+                    max_m = st.number_input("Máx/dia", 0, 20, int(pl_srv.get("max_manha",6)), key=f"{key_prefix}_mxm")
+                    # Bloqueios manhã
+                    key_bm = f"{key_prefix}_bloqs_m"
+                    if key_bm not in st.session_state:
+                        st.session_state[key_bm] = pl_srv.get("bloqueios_manha", [])
+                    col_bm1, col_bm2 = st.columns(2)
+                    with col_bm1:
+                        if st.button("➕ Bloqueio manhã", key=f"{key_prefix}_add_bm"):
+                            st.session_state[key_bm].append({"dia":"Qui","tipo":"Sem manhã","horario":""}); st.rerun()
+                    with col_bm2:
+                        if st.session_state[key_bm] and st.button("🗑️", key=f"{key_prefix}_clr_bm"):
+                            st.session_state[key_bm] = []; st.rerun()
+                    bloqueios_m = []
+                    dias_op = ["Seg","Ter","Qua","Qui","Sex"]
+                    for b, bloq in enumerate(st.session_state[key_bm]):
+                        bm1,bm2,bm3,bm4 = st.columns([2,2,2,1])
+                        with bm1: d_b = st.selectbox("Dia", dias_op, index=dias_op.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op else 3, key=f"{key_prefix}_dbm_{b}")
+                        with bm2: t_b = st.selectbox("Tipo", ["Sem manhã","Hor. reduzido"], index=1 if bloq.get("tipo")=="Hor. reduzido" else 0, key=f"{key_prefix}_tbm_{b}")
+                        with bm3: h_b = st.text_input("Horário", value=bloq.get("horario",""), key=f"{key_prefix}_hbm_{b}") if t_b=="Hor. reduzido" else ""
+                        with bm4:
+                            st.write("")
+                            if st.button("❌", key=f"{key_prefix}_delbm_{b}"): st.session_state[key_bm].pop(b); st.rerun()
+                        bloqueios_m.append({"dia":d_b,"tipo":t_b,"horario":h_b})
                 else:
-                    s2_hor_fds_m = s2_hor_fds_t = ""
-                    s2_max_fds_m = s2_max_fds_t = 0
-                s2 = {
-                    "nome": s2_nome, "abrev": s2_abrev, "obs": s2_obs, "quem": s2_quem,
-                    "manha": s2_hor_m, "min_manha": int(s2_min_m), "max_manha": int(s2_max_m),
-                    "tarde": s2_hor_t, "min_tarde": int(s2_min_t), "max_tarde": int(s2_max_t),
-                    "cinderela": s2_hor_c, "min_cind": int(s2_min_c), "max_cind": int(s2_max_c),
-                    "fds": s2_tem_fds, "fds_manha": s2_hor_fds_m, "fds_max_manha": int(s2_max_fds_m),
-                    "fds_tarde": s2_hor_fds_t, "fds_max_tarde": int(s2_max_fds_t),
-                }
-            else:
-                s2_nome = ""; s2_obs = ""
+                    hor_m,min_m,max_m,bloqueios_m = "",0,0,[]
 
-            # Duração por SG
-            n_sgs_atual = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
-            st.markdown("**📅 Duração por SG neste local (semanas, 0 = não passa aqui):**")
-            duracao_sgs = {}
-            dur_cols = st.columns(min(n_sgs_atual, 6))
-            pl_dur = pl.get("duracao_por_sg", {})
-            for sg_idx in range(n_sgs_atual):
-                sg_num = sg_idx + 1
-                with dur_cols[sg_idx % 6]:
-                    dur = st.number_input(f"SG{sg_num}", 0, int(num_semanas),
-                        int(pl_dur.get(str(sg_num), 0)), key=f"dur_{i}_{sg_num}")
-                    if dur > 0: duracao_sgs[str(sg_num)] = int(dur)
-
-            st.markdown("**⏰ Turnos:**")
-            tab_util, tab_fds = st.tabs(["📅 Dias Úteis", "🏖️ Final de Semana"])
-
-            with tab_util:
-                col_u1, col_u2, col_u3 = st.columns(3)
-                with col_u1:
-                    st.markdown("**🌅 Manhã**")
-                    tem_m = st.checkbox("Tem manhã?", value=bool(pl.get("manha","07-13h")), key=f"tm_{i}")
-                    if tem_m:
-                        hor_m = st.text_input("Horário", value=pl.get("manha","07-13h"), key=f"hm_{i}")
-                        min_m = st.number_input("Mín/dia", 0, 20, int(pl.get("min_manha",0)), key=f"mnm_{i}")
-                        max_m = st.number_input("Máx/dia", 0, 20, int(pl.get("max_manha",6)), key=f"mxm_{i}")
-                        st.markdown("**🚫 Bloqueios:**")
-                        key_bloqs_m = f"bloqs_m_{i}"
-                        if key_bloqs_m not in st.session_state:
-                            st.session_state[key_bloqs_m] = pl.get("bloqueios_manha", [])
-                        col_bma, col_bmb = st.columns(2)
-                        with col_bma:
-                            if st.button("➕ Adicionar", key=f"add_bm_{i}"):
-                                st.session_state[key_bloqs_m].append({"dia":"Qui","tipo":"Sem manhã","horario":""})
-                                st.rerun()
-                        with col_bmb:
-                            if st.session_state[key_bloqs_m] and st.button("🗑️ Limpar", key=f"clr_bm_{i}"):
-                                st.session_state[key_bloqs_m] = []
-                                st.rerun()
-                        if not st.session_state[key_bloqs_m]:
-                            st.caption("Sem bloqueios — manhã em todos os dias úteis.")
-                        bloqueios_m_list = []
-                        dias_op_m = ["Seg","Ter","Qua","Qui","Sex"]
-                        for b, bloq in enumerate(st.session_state[key_bloqs_m]):
-                            bm1,bm2,bm3,bm4 = st.columns([2,2,2,1])
-                            with bm1:
-                                idx_d = dias_op_m.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op_m else 3
-                                d_bm = st.selectbox("Dia", dias_op_m, index=idx_d, key=f"dbloqm_{i}_{b}")
-                            with bm2:
-                                t_bm = st.selectbox("Tipo", ["Sem manhã","Horário reduzido"],
-                                    index=1 if bloq.get("tipo")=="Horário reduzido" else 0, key=f"tbloqm_{i}_{b}")
-                            with bm3:
-                                h_bm = st.text_input("Horário", value=bloq.get("horario","07-08h"), key=f"hbloqm_{i}_{b}") if t_bm=="Horário reduzido" else ""
-                                if t_bm != "Horário reduzido": st.text_input("—", disabled=True, key=f"hbloqm_{i}_{b}")
-                            with bm4:
-                                st.write("")
-                                if st.button("❌", key=f"del_bm_{i}_{b}"):
-                                    st.session_state[key_bloqs_m].pop(b); st.rerun()
-                            bloqueios_m_list.append({"dia":d_bm,"tipo":t_bm,"horario":h_bm})
-                    else:
-                        hor_m, min_m, max_m, bloqueios_m_list = "", 0, 0, []
-
-                with col_u2:
-                    st.markdown("**🌇 Tarde**")
-                    tem_t = st.checkbox("Tem tarde?", value=bool(pl.get("tarde","12-18h")), key=f"tt_{i}")
-                    if tem_t:
-                        hor_t = st.text_input("Horário normal", value=pl.get("tarde","12-18h"), key=f"ht_{i}")
-                        min_t = st.number_input("Mín/dia", 0, 20, int(pl.get("min_tarde",3)), key=f"mnt_{i}")
-                        max_t = st.number_input("Máx/dia", 0, 20, int(pl.get("max_tarde",4)), key=f"mxt_{i}")
-                        st.markdown("**🚫 Bloqueios:**")
-                        key_bloqs = f"bloqs_{i}"
-                        if key_bloqs not in st.session_state:
-                            st.session_state[key_bloqs] = pl.get("bloqueios_tarde", [
-                                {"dia":"Qui","tipo":"Sem tarde","horario":""}
-                            ])
-                        col_ba, col_bb = st.columns(2)
-                        with col_ba:
-                            if st.button("➕ Adicionar", key=f"add_b_{i}"):
-                                st.session_state[key_bloqs].append({"dia":"Seg","tipo":"Sem tarde","horario":""})
-                                st.rerun()
-                        with col_bb:
-                            if st.session_state[key_bloqs] and st.button("🗑️ Limpar todos", key=f"clr_b_{i}"):
-                                st.session_state[key_bloqs] = []
-                                st.rerun()
-                        if not st.session_state[key_bloqs]:
-                            st.caption("Sem bloqueios — tarde em todos os dias úteis.")
-                        bloqueios_t = []
-                        dias_op = ["Seg","Ter","Qua","Qui","Sex"]
-                        for b, bloq in enumerate(st.session_state[key_bloqs]):
-                            bc1,bc2,bc3,bc4 = st.columns([2,2,2,1])
-                            with bc1:
-                                idx_d = dias_op.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op else 3
-                                d_b = st.selectbox("Dia", dias_op, index=idx_d, key=f"dbloq_{i}_{b}")
-                            with bc2:
-                                t_b = st.selectbox("Tipo", ["Sem tarde","Horário reduzido"],
-                                    index=1 if bloq.get("tipo")=="Horário reduzido" else 0, key=f"tbloq_{i}_{b}")
-                            with bc3:
-                                h_b = st.text_input("Horário", value=bloq.get("horario","12-16h"), key=f"hbloq_{i}_{b}") if t_b=="Horário reduzido" else ""
-                                if t_b != "Horário reduzido": st.text_input("—", disabled=True, key=f"hbloq_{i}_{b}")
-                            with bc4:
-                                st.write("")
-                                if st.button("❌", key=f"del_b_{i}_{b}"):
-                                    st.session_state[key_bloqs].pop(b); st.rerun()
-                            bloqueios_t.append({"dia":d_b,"tipo":t_b,"horario":h_b})
-                    else:
-                        hor_t,min_t,max_t,bloqueios_t = "",0,0,[]
-
-                with col_u3:
-                    st.markdown("**🌙 Cinderela**")
-                    tem_c = st.checkbox("Tem cinderela?", value=bool(pl.get("cinderela","")), key=f"tc_{i}")
-                    if tem_c:
-                        hor_c = st.text_input("Horário", value=pl.get("cinderela","19-23h"), key=f"hc_{i}")
-                        min_c = st.number_input("Mín/dia", 0, 10, int(pl.get("min_cind",0)), key=f"mnc_{i}")
-                        max_c = st.number_input("Máx/dia", 0, 10, int(pl.get("max_cind",2)), key=f"mxc_{i}")
-                        dias_c_validos = ["Seg","Ter","Qua","Qui","Sex"]
-                        dias_c_default = [d for d in pl.get("dias_cind",["Sex"]) if d in dias_c_validos] or ["Sex"]
-                        dias_c = st.multiselect("Dias", dias_c_validos,
-                            default=dias_c_default, key=f"dc_{i}")
-                    else:
-                        hor_c,min_c,max_c,dias_c = "",0,0,[]
-
-            with tab_fds:
-                tem_fds = st.checkbox("Tem plantão no FDS?", value=pl.get("fds",False), key=f"lfds_{i}")
-                if tem_fds:
-                    col_f1,col_f2,col_f3 = st.columns(3)
-                    with col_f1:
-                        st.markdown("**🌅 Manhã FDS**")
-                        tem_fm = st.checkbox("Tem?", value=bool(pl.get("fds_manha","")), key=f"tfm_{i}")
-                        hor_fm = st.text_input("Horário", value=pl.get("fds_manha","07-12h"), key=f"hfm_{i}") if tem_fm else ""
-                        min_fm = st.number_input("Mín", 0, 10, int(pl.get("fds_min_manha",1)), key=f"mnfm_{i}") if tem_fm else 0
-                        max_fm = st.number_input("Máx", 0, 10, int(pl.get("fds_max_manha",2)), key=f"mxfm_{i}") if tem_fm else 0
-                    with col_f2:
-                        st.markdown("**🌇 Tarde FDS**")
-                        tem_ft = st.checkbox("Tem?", value=bool(pl.get("fds_tarde","")), key=f"tft_{i}")
-                        hor_ft = st.text_input("Horário", value=pl.get("fds_tarde","13-19h"), key=f"hft_{i}") if tem_ft else ""
-                        min_ft = st.number_input("Mín", 0, 10, int(pl.get("fds_min_tarde",1)), key=f"mnft_{i}") if tem_ft else 0
-                        max_ft = st.number_input("Máx", 0, 10, int(pl.get("fds_max_tarde",2)), key=f"mxft_{i}") if tem_ft else 0
-                    with col_f3:
-                        st.markdown("**🌙 Cinderela FDS**")
-                        tem_fc = st.checkbox("Tem?", value=bool(pl.get("fds_cind","")), key=f"tfc_{i}")
-                        hor_fc = st.text_input("Horário", value=pl.get("fds_cind","19-23h"), key=f"hfc_{i}") if tem_fc else ""
-                        min_fc = st.number_input("Mín", 0, 10, int(pl.get("fds_min_cind",0)), key=f"mnfc_{i}") if tem_fc else 0
-                        max_fc = st.number_input("Máx", 0, 10, int(pl.get("fds_max_cind",2)), key=f"mxfc_{i}") if tem_fc else 0
-                    quem_fds = st.text_input("Quem faz?", value=pl.get("fds_quem",""), key=f"lfdsquem_{i}")
-                    comp_fds = st.text_input("Compensação?", value=pl.get("fds_comp",""), key=f"lfdscomp_{i}")
+            with tu2:
+                st.markdown("**🌇 Tarde**")
+                tem_t = st.checkbox("Tem tarde?", value=bool(pl_srv.get("tarde","12-18h")), key=f"{key_prefix}_tt")
+                if tem_t:
+                    hor_t = st.text_input("Horário normal", value=pl_srv.get("tarde","12-18h"), key=f"{key_prefix}_ht")
+                    min_t = st.number_input("Mín/dia", 0, 20, int(pl_srv.get("min_tarde",3)), key=f"{key_prefix}_mnt")
+                    max_t = st.number_input("Máx/dia", 0, 20, int(pl_srv.get("max_tarde",4)), key=f"{key_prefix}_mxt")
+                    # Bloqueios tarde
+                    key_bt = f"{key_prefix}_bloqs_t"
+                    if key_bt not in st.session_state:
+                        st.session_state[key_bt] = pl_srv.get("bloqueios_tarde", [{"dia":"Qui","tipo":"Sem tarde","horario":""}])
+                    col_bt1, col_bt2 = st.columns(2)
+                    with col_bt1:
+                        if st.button("➕ Bloqueio tarde", key=f"{key_prefix}_add_bt"):
+                            st.session_state[key_bt].append({"dia":"Seg","tipo":"Sem tarde","horario":""}); st.rerun()
+                    with col_bt2:
+                        if st.session_state[key_bt] and st.button("🗑️", key=f"{key_prefix}_clr_bt"):
+                            st.session_state[key_bt] = []; st.rerun()
+                    if not st.session_state[key_bt]: st.caption("Sem bloqueios.")
+                    bloqueios_t = []
+                    dias_op = ["Seg","Ter","Qua","Qui","Sex"]
+                    for b, bloq in enumerate(st.session_state[key_bt]):
+                        bt1,bt2,bt3,bt4 = st.columns([2,2,2,1])
+                        with bt1: d_b = st.selectbox("Dia", dias_op, index=dias_op.index(bloq.get("dia","Qui")) if bloq.get("dia") in dias_op else 3, key=f"{key_prefix}_dbt_{b}")
+                        with bt2: t_b = st.selectbox("Tipo", ["Sem tarde","Horário reduzido"], index=1 if bloq.get("tipo")=="Horário reduzido" else 0, key=f"{key_prefix}_tbt_{b}")
+                        with bt3: h_b = st.text_input("Horário", value=bloq.get("horario","12-16h"), key=f"{key_prefix}_hbt_{b}") if t_b=="Horário reduzido" else ""
+                        with bt4:
+                            st.write("")
+                            if st.button("❌", key=f"{key_prefix}_delbt_{b}"): st.session_state[key_bt].pop(b); st.rerun()
+                        bloqueios_t.append({"dia":d_b,"tipo":t_b,"horario":h_b})
                 else:
-                    hor_fm=hor_ft=hor_fc=quem_fds=comp_fds=""
-                    min_fm=max_fm=min_ft=max_ft=min_fc=max_fc=0
+                    hor_t,min_t,max_t,bloqueios_t = "",0,0,[]
 
-            locais.append({
-                "nome": nome_l, "abrev": abrev_l, "obs": obs_l,
-                "servico2": s2_nome, "servico2_obs": s2_obs, "servico2_cfg": s2,
+            with tu3:
+                st.markdown("**🌙 Cinderela**")
+                tem_c = st.checkbox("Tem cinderela?", value=bool(pl_srv.get("cinderela","")), key=f"{key_prefix}_tc")
+                if tem_c:
+                    hor_c = st.text_input("Horário", value=pl_srv.get("cinderela","19-23h"), key=f"{key_prefix}_hc")
+                    min_c = st.number_input("Mín/dia", 0, 10, int(pl_srv.get("min_cind",0)), key=f"{key_prefix}_mnc")
+                    max_c = st.number_input("Máx/dia", 0, 10, int(pl_srv.get("max_cind",2)), key=f"{key_prefix}_mxc")
+                    dias_c_validos = ["Seg","Ter","Qua","Qui","Sex"]
+                    dias_c_def = [d for d in pl_srv.get("dias_cind",["Sex"]) if d in dias_c_validos] or ["Sex"]
+                    dias_c = st.multiselect("Dias", dias_c_validos, default=dias_c_def, key=f"{key_prefix}_dc")
+                else:
+                    hor_c,min_c,max_c,dias_c = "",0,0,[]
+
+            st.markdown("**🏖️ Final de Semana:**")
+            tf1, tf2, tf3 = st.columns(3)
+            with tf1:
+                st.markdown("**🌅 Manhã FDS**")
+                tem_fm = st.checkbox("Tem?", value=bool(pl_srv.get("fds_manha","")), key=f"{key_prefix}_tfm")
+                hor_fm = st.text_input("Horário", value=pl_srv.get("fds_manha","07-12h"), key=f"{key_prefix}_hfm") if tem_fm else ""
+                min_fm = st.number_input("Mín", 0,10,int(pl_srv.get("fds_min_manha",1)), key=f"{key_prefix}_mnfm") if tem_fm else 0
+                max_fm = st.number_input("Máx", 0,10,int(pl_srv.get("fds_max_manha",2)), key=f"{key_prefix}_mxfm") if tem_fm else 0
+            with tf2:
+                st.markdown("**🌇 Tarde FDS**")
+                tem_ft = st.checkbox("Tem?", value=bool(pl_srv.get("fds_tarde","")), key=f"{key_prefix}_tft")
+                hor_ft = st.text_input("Horário", value=pl_srv.get("fds_tarde","13-19h"), key=f"{key_prefix}_hft") if tem_ft else ""
+                min_ft = st.number_input("Mín", 0,10,int(pl_srv.get("fds_min_tarde",1)), key=f"{key_prefix}_mnft") if tem_ft else 0
+                max_ft = st.number_input("Máx", 0,10,int(pl_srv.get("fds_max_tarde",2)), key=f"{key_prefix}_mxft") if tem_ft else 0
+            with tf3:
+                st.markdown("**🌙 Cinderela FDS**")
+                tem_fc = st.checkbox("Tem?", value=bool(pl_srv.get("fds_cind","")), key=f"{key_prefix}_tfc")
+                hor_fc = st.text_input("Horário", value=pl_srv.get("fds_cind","19-23h"), key=f"{key_prefix}_hfc") if tem_fc else ""
+                min_fc = st.number_input("Mín", 0,10,int(pl_srv.get("fds_min_cind",0)), key=f"{key_prefix}_mnfc") if tem_fc else 0
+                max_fc = st.number_input("Máx", 0,10,int(pl_srv.get("fds_max_cind",2)), key=f"{key_prefix}_mxfc") if tem_fc else 0
+
+            quem_fds = st.text_input("Quem faz FDS?", value=pl_srv.get("fds_quem",""), key=f"{key_prefix}_fdsquem")
+            comp_fds = st.text_input("Compensação FDS?", value=pl_srv.get("fds_comp",""), key=f"{key_prefix}_fdscomp")
+
+            return {
+                "nome": nome, "abrev": abrev, "obs": obs, "quem": quem,
                 "duracao_por_sg": duracao_sgs,
-                "manha": hor_m if tem_m else "", "min_manha": int(min_m), "max_manha": int(max_m),
-                "bloqueios_manha": bloqueios_m_list,
-                "tarde": hor_t if tem_t else "", "min_tarde": int(min_t), "max_tarde": int(max_t),
-                "bloqueios_tarde": bloqueios_t,
-                "cinderela": hor_c if tem_c else "", "min_cind": int(min_c), "max_cind": int(max_c), "dias_cind": dias_c,
-                "fds": tem_fds,
+                "manha": hor_m, "min_manha": int(min_m), "max_manha": int(max_m), "bloqueios_manha": bloqueios_m,
+                "tarde": hor_t, "min_tarde": int(min_t), "max_tarde": int(max_t), "bloqueios_tarde": bloqueios_t,
+                "cinderela": hor_c, "min_cind": int(min_c), "max_cind": int(max_c), "dias_cind": dias_c,
+                "fds": bool(tem_fm or tem_ft or tem_fc),
                 "fds_manha": hor_fm, "fds_min_manha": int(min_fm), "fds_max_manha": int(max_fm),
                 "fds_tarde": hor_ft, "fds_min_tarde": int(min_ft), "fds_max_tarde": int(max_ft),
                 "fds_cind": hor_fc, "fds_min_cind": int(min_fc), "fds_max_cind": int(max_fc),
                 "fds_quem": quem_fds, "fds_comp": comp_fds,
                 "cov_tarde": int(min_t) if tem_t else 0,
-            })
-            st.divider()
+            }
+
+    for i in range(int(num_locais)):
+        pl = pf_locais[i] if i < len(pf_locais) else {}
+        with st.container():
+            st.markdown(f"---")
+            st.markdown(f"## 🏥 Bloco {i+1}")
+
+            # Serviço principal
+            srv_principal = _servico_form(f"b{i}_s0", pl, f"Serviço 1 do Bloco {i+1}", expanded=True)
+
+            # Serviços adicionais
+            key_n_srv = f"n_srv_{i}"
+            if key_n_srv not in st.session_state:
+                # Pré-preencher com serviços importados
+                n_srv_def = len(pl.get("servicos_extras", [])) if pl.get("servicos_extras") else 0
+                if pl.get("servico2"): n_srv_def = max(n_srv_def, 1)
+                st.session_state[key_n_srv] = n_srv_def
+
+            srv_extras = []
+            for j in range(st.session_state[key_n_srv]):
+                pl_extra = {}
+                if j == 0 and pl.get("servico2"):
+                    pl_extra = pl.get("servico2_cfg", {"nome": pl.get("servico2",""), "obs": pl.get("servico2_obs","")})
+                elif j < len(pl.get("servicos_extras",[])):
+                    pl_extra = pl["servicos_extras"][j]
+                srv_extra = _servico_form(f"b{i}_s{j+1}", pl_extra, f"Serviço {j+2} do Bloco {i+1}", expanded=False)
+                srv_extras.append(srv_extra)
+                if st.button(f"❌ Remover Serviço {j+2}", key=f"rm_srv_{i}_{j}"):
+                    st.session_state[key_n_srv] -= 1; st.rerun()
+
+            if st.button(f"➕ Adicionar serviço ao Bloco {i+1}", key=f"add_srv_{i}"):
+                st.session_state[key_n_srv] += 1; st.rerun()
+
+            # Montar dados do bloco
+            bloco_nome = srv_principal["nome"]
+            if srv_extras:
+                bloco_nome = f"{srv_principal['nome']} + " + " + ".join([s["nome"] for s in srv_extras if s["nome"]])
+            srv_principal["servicos_extras"] = srv_extras
+            srv_principal["nome_bloco"] = bloco_nome
+            locais.append(srv_principal)
 
 # BLOCO 4 — Rodízio
 with st.expander("🔄 Bloco 4 — Tabela de Rodízio", expanded=True):
@@ -808,26 +761,65 @@ Abas: {', '.join(abas_excel)}
             )
         if resposta:
             dados1 = extrair_json(resposta) or {}
-            st.session_state.escala_gerada = resposta
             st.session_state.esp_atual = especialidade
             st.session_state.grupo_atual = grupo
             st.session_state.turma_atual = turma
             cal_gerado = json.dumps(dados1.get("calendario_rodizio",[]), ensure_ascii=False)
+
             with st.spinner("Passo 2/2 — Escala detalhada dia a dia... ⏳"):
                 resp2 = chamar_claude(
-                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário:\n{cal_gerado}\n\nGere a escala_detalhada."}],
-                    system_prompt=SYSTEM_DETALHE, max_tokens=12000
+                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário gerado:\n{cal_gerado}\n\nAlunos:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos em TODOS os dias das {num_semanas} semanas."}],
+                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
                 )
+
             if resp2:
                 dados2 = extrair_json(resp2) or {}
-                dados1["escala_detalhada"] = dados2.get("escala_detalhada", [])
-                st.session_state.escala_gerada = json.dumps(dados1, ensure_ascii=False)
+                det = dados2.get("escala_detalhada", [])
+                if det:
+                    dados1["escala_detalhada"] = det
+                    st.success(f"✅ Escala detalhada gerada: {len(det)} entradas")
+                else:
+                    st.warning("⚠️ Passo 2 não retornou escala detalhada. As abas Subgrupo e Individual ficarão vazias.")
+            else:
+                st.warning("⚠️ Passo 2 falhou (timeout). Tente novamente ou use a correção abaixo.")
+
+            st.session_state.escala_gerada = json.dumps(dados1, ensure_ascii=False)
             st.rerun()
 
 # Mostrar resultado
 if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
     st.divider()
     st.header("📊 Resultado")
+
+    # Verificar se escala detalhada está vazia
+    dados_atual = {}
+    try:
+        dados_atual = json.loads(st.session_state.escala_gerada) if isinstance(st.session_state.escala_gerada, str) else st.session_state.escala_gerada
+    except: pass
+
+    if not dados_atual.get("escala_detalhada"):
+        st.warning("⚠️ Escala detalhada vazia — as abas Subgrupo e Individual não terão dados.")
+        if st.button("🔄 Gerar escala detalhada agora", type="primary"):
+            briefing_atual = st.session_state.get("briefing_atual","")
+            cal = json.dumps(dados_atual.get("calendario_rodizio",[]), ensure_ascii=False)
+            alunos_atual = st.session_state.get("config_atual",{}).get("alunos_por_sg",{})
+            n_sem_atual = st.session_state.get("config_atual",{}).get("num_semanas",8)
+            with st.spinner("Gerando escala detalhada... ⏳"):
+                resp_det = chamar_claude(
+                    [{"role": "user", "content": f"Briefing:\n{briefing_atual}\n\nCalendário:\n{cal}\n\nAlunos:\n{json.dumps(alunos_atual, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos nas {n_sem_atual} semanas."}],
+                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
+                )
+            if resp_det:
+                dados2 = extrair_json(resp_det) or {}
+                det = dados2.get("escala_detalhada", [])
+                if det:
+                    dados_atual["escala_detalhada"] = det
+                    st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
+                    st.success(f"✅ {len(det)} entradas geradas!")
+                    st.rerun()
+                else:
+                    st.error("A IA não retornou dados. Tente novamente.")
+
     mostrar_resultado(
         st.session_state.escala_gerada,
         st.session_state.get("esp_atual",""),
