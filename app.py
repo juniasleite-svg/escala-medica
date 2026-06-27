@@ -474,17 +474,9 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 quem = st.text_input("Quem faz?", value=pl_srv.get("quem",""), key=f"{key_prefix}_quem",
                     placeholder="ex: todos | apenas SG par | alunos do Amb")
             with cc:
-                st.caption("Duração por SG (semanas)")
-                n_sgs_atual = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
-                duracao_sgs = {}
-                pl_dur = pl_srv.get("duracao_por_sg", {})
-                dur_cols = st.columns(min(n_sgs_atual, 4))
-                for sg_idx in range(n_sgs_atual):
-                    sg_num = sg_idx + 1
-                    with dur_cols[sg_idx % 4]:
-                        dur = st.number_input(f"SG{sg_num}", 0, int(num_semanas),
-                            int(pl_dur.get(str(sg_num), 0)), key=f"{key_prefix}_dur_{sg_num}")
-                        if dur > 0: duracao_sgs[str(sg_num)] = int(dur)
+                st.caption("ℹ️ A duração por SG é configurada no nível do bloco, não do serviço individual.")
+                duracao_sgs = pl_srv.get("duracao_por_sg", {})
+                n_sgs_srv = pl_srv.get("n_sgs", len(alunos_por_sg) if alunos_por_sg else int(num_sg))
 
             st.markdown("**⏰ Dias Úteis:**")
             tu1, tu2, tu3 = st.columns(3)
@@ -592,6 +584,7 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
 
             return {
                 "nome": nome, "abrev": abrev, "obs": obs, "quem": quem,
+                "n_sgs": int(n_sgs_srv),
                 "duracao_por_sg": duracao_sgs,
                 "manha": hor_m, "min_manha": int(min_m), "max_manha": int(max_m), "bloqueios_manha": bloqueios_m,
                 "tarde": hor_t, "min_tarde": int(min_t), "max_tarde": int(max_t), "bloqueios_tarde": bloqueios_t,
@@ -635,6 +628,37 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
 
             if st.button(f"➕ Adicionar serviço ao Bloco {i+1}", key=f"add_srv_{i}"):
                 st.session_state[key_n_srv] += 1; st.rerun()
+
+            # Duração e distribuição de SGs no nível do BLOCO
+            st.markdown("**📅 Distribuição de SGs neste bloco:**")
+            n_sgs_total = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
+            n_srv_bloco = 1 + st.session_state.get(key_n_srv, 0)
+            pl_dur_bloco = pl.get("duracao_por_sg", {})
+
+            col_dur1, col_dur2 = st.columns(2)
+            with col_dur1:
+                sem_por_sg = st.number_input(
+                    f"Semanas por SG neste bloco",
+                    min_value=1, max_value=int(num_semanas),
+                    value=int(pl.get("sem_por_sg", int(num_semanas) // max(n_sgs_total // n_srv_bloco, 1) if n_srv_bloco else int(num_semanas))),
+                    key=f"sem_sg_{i}",
+                    help=f"Quantas semanas cada SG fica neste bloco total? Com {n_srv_bloco} serviço(s) e {n_sgs_total} SGs, cada serviço recebe ~{n_sgs_total // n_srv_bloco if n_srv_bloco else n_sgs_total} SGs."
+                )
+            with col_dur2:
+                # Calcular automaticamente a distribuição
+                sgs_por_srv = max(n_sgs_total // n_srv_bloco, 1) if n_srv_bloco > 0 else n_sgs_total
+                st.info(f"📊 {n_sgs_total} SGs ÷ {n_srv_bloco} serviço(s) = **{sgs_por_srv} SGs/serviço** × {sem_por_sg} sem = {sgs_por_srv * sem_por_sg} sem/bloco")
+
+            # Gerar duracao_sgs automaticamente
+            duracao_sgs_bloco = {str(sg+1): int(sem_por_sg) for sg in range(n_sgs_total)}
+
+            # Propagar para o serviço principal
+            srv_principal["duracao_por_sg"] = duracao_sgs_bloco
+            srv_principal["sem_por_sg"] = int(sem_por_sg)
+            srv_principal["sgs_por_servico"] = sgs_por_srv
+            for srv_e in srv_extras:
+                srv_e["duracao_por_sg"] = duracao_sgs_bloco
+                srv_e["sem_por_sg"] = int(sem_por_sg)
 
             # Montar dados do bloco
             bloco_nome = srv_principal["nome"]

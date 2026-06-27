@@ -175,10 +175,11 @@ def gerar_excel_completo(dados, config):
     _aba_alunos(wb, titulo, alunos_por_sg, config)
     _aba_calendario_rodizio(wb, titulo, dados.get("calendario_rodizio",[]), config, semanas)
     _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg, ano_escala)
-    _aba_resumo_horas(wb, titulo, dados.get("resumo_horas",[]), config, semanas, locais_cfg)
+    _aba_resumo_horas(wb, titulo, dados.get("resumo_horas",[]), config, semanas, locais_cfg, dados)
     _aba_regras(wb, titulo, config, dados)
     _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, semanas, locais_cfg)
     _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, semanas, locais_cfg)
+    _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_escala)
 
     out = io.BytesIO()
     wb.save(out)
@@ -507,7 +508,7 @@ def _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg, ano
 
 
 # ── ABA 5: RESUMO DE HORAS ───────────────────────────────────────────────────
-def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg):
+def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg, dados=None):
     ws = wb.create_sheet("Resumo de Horas")
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "D3"
@@ -541,36 +542,81 @@ def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg):
         ws.column_dimensions[get_column_letter(5+n_sem+j)].width = 12
 
     alunos_por_sg = config.get("alunos_por_sg",{})
-    # Montar mapa de resumo_horas por nome
+    escala_det = dados.get("escala_detalhada", []) if dados else []
+    ano_escala = "2026"
+    try: ano_escala = date.fromisoformat(config.get("data_inicio","")).strftime("%Y")
+    except: pass
+
+    # Calcular horas reais por aluno por semana a partir da escala_detalhada
+    from collections import defaultdict
+    horas_calc = defaultdict(lambda: defaultdict(float))  # {nome: {sem_num: horas}}
+    cind_calc = defaultdict(int)
+    fds_enf_calc = defaultdict(int)
+    fds_ps_calc = defaultdict(int)
+
+    for entry in escala_det:
+        alunos = entry.get("alunos", [])
+        if isinstance(entry.get("nome"), str) and entry.get("nome"):
+            alunos = [entry["nome"]]
+        sem_num = entry.get("semana", 0)
+        horas_entry = entry.get("horas", 0)
+        try: horas_entry = float(horas_entry)
+        except: horas_entry = 0
+        turno = (entry.get("turno","") or "").lower()
+        local = (entry.get("local","") or "").lower()
+        for nome in alunos:
+            horas_calc[nome][int(sem_num)] += horas_entry
+            if "cinderela" in turno or turno == "c":
+                cind_calc[nome] += 1
+            if "fds" in turno or "★" in turno:
+                if "enf" in local: fds_enf_calc[nome] += 1
+                else: fds_ps_calc[nome] += 1
+
+    # Montar mapa de resumo_horas por nome (para RA e dados extras)
     rh_map = {r.get("nome",""): r for r in resumo_horas} if resumo_horas else {}
 
     row = 3
     for sg_key in sorted(alunos_por_sg.keys(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
         sg_num = int(sg_key) if sg_key.isdigit() else 1
         cor_sg = _cor_sg(sg_num)
-        # Cores dos blocos (local) para as semanas
         for i_al, nome in enumerate(alunos_por_sg[sg_key]):
             cor_row = C["ALT1"] if i_al % 2 == 0 else C["ALT2"]
             rh = rh_map.get(nome, {})
-            semanas_h = rh.get("semanas",[0]*n_sem)
-            total = rh.get("total_horas", sum(semanas_h) if semanas_h else 0)
+
+            # Usar horas calculadas da escala_detalhada; fallback para dados da IA
+            semanas_h_calc = [horas_calc[nome].get(i+1, 0) for i in range(n_sem)]
+            semanas_h_ia = rh.get("semanas", [0]*n_sem)
+
+            # Preferir calculado se tiver dados, senão usar IA
+            semanas_h = []
+            for i in range(n_sem):
+                h_calc = semanas_h_calc[i]
+                h_ia = semanas_h_ia[i] if i < len(semanas_h_ia) else 0
+                semanas_h.append(h_calc if h_calc > 0 else h_ia)
+
+            total = sum(semanas_h)
+            if total == 0:
+                total = rh.get("total_horas", 0)
 
             _cel(ws, row, 1, f"SG{sg_num}", bold=True, bg=cor_sg, sz=9)
             _cel(ws, row, 2, nome, halign="left", bg=cor_row, sz=9)
             _cel(ws, row, 3, str(rh.get("ra","")), bg=cor_row, sz=9)
 
-            # Horas por semana com cor do local
-            for i_sem in range(n_sem):
-                h = semanas_h[i_sem] if i_sem < len(semanas_h) else 0
-                # Cor da célula baseada no local daquela semana
-                cor_sem = _cor_semana_aluno(nome, i_sem+1, resumo_horas, locais_cfg)
-                cor_h = "FFC7CE" if h > 43 else ("FFEB9C" if h > 40 else (cor_sem or cor_row))
-                _cel(ws, row, 4+i_sem, f"{h}h" if h else "—", bg=cor_h, sz=9)
+            limite_ch = int(config.get("regras_especiais",{}).get("limite_ch",40))
+            limite_abs = int(config.get("regras_especiais",{}).get("limite_abs",43))
 
-            _cel(ws, row, 4+n_sem, f"{total}h", bold=True, bg=C["TOTAL"], sz=9)
-            _cel(ws, row, 5+n_sem, str(rh.get("cinderelas",0)), bg=cor_row, sz=9)
-            _cel(ws, row, 6+n_sem, str(rh.get("plantoes_enf_fds",0)), bg=C["ENF_FDS_H"], sz=9)
-            _cel(ws, row, 7+n_sem, str(rh.get("plantoes_ps_fds",0)), bg=C["PS_FDS_H"], sz=9)
+            for i_sem in range(n_sem):
+                h = semanas_h[i_sem]
+                cor_h = "FFC7CE" if h > limite_abs else ("FFEB9C" if h > limite_ch else cor_row)
+                _cel(ws, row, 4+i_sem, f"{int(h)}h" if h else "—", bg=cor_h, sz=9)
+
+            _cel(ws, row, 4+n_sem, f"{int(total)}h", bold=True, bg=C["TOTAL"], sz=9)
+            cind_v = cind_calc.get(nome, rh.get("cinderelas",0))
+            enf_v = fds_enf_calc.get(nome, rh.get("plantoes_enf_fds",0))
+            ps_v = fds_ps_calc.get(nome, rh.get("plantoes_ps_fds",0))
+            _cel(ws, row, 5+n_sem, str(cind_v), bg=cor_row, sz=9)
+            _cel(ws, row, 6+n_sem, str(enf_v), bg=C["ENF_FDS_H"], sz=9)
+            _cel(ws, row, 7+n_sem, str(ps_v), bg=C["PS_FDS_H"], sz=9)
             ws.row_dimensions[row].height = 15
             row += 1
 
@@ -804,3 +850,170 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
             row += 1
 
 # v2 - formato CM5 exato
+
+
+# ── ABA: ESCALA POR SERVIÇO ───────────────────────────────────────────────────
+def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_escala="2026"):
+    ws = wb.create_sheet("Escala por Serviço")
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "C5"
+
+    grupo = config.get("grupo","")
+    turma = config.get("turma","")
+    d_ini = semanas[0][0].strftime("%d/%m/%Y") if semanas else ""
+    d_fim = semanas[-1][-1].strftime("%d/%m/%Y") if semanas else ""
+    regras = config.get("regras_especiais",{})
+
+    # Montar todas as datas
+    todas_datas = [dt for sem in semanas for dt in sem]
+    n_datas = len(todas_datas)
+
+    _header(ws, 1, 1, f"ESCALA POR SERVIÇO — {grupo} / {turma}  |  {d_ini}–{d_fim}", span=2+n_datas, sz=11)
+    subtit = f"Terça = {regras.get('terca','12-16h')}  ·  Quinta = {regras.get('quinta','ENAMED')}"
+    _header(ws, 2, 1, subtit, span=2+n_datas, bg=C["H2"], sz=9)
+
+    # Linha 3: datas
+    _cel(ws, 3, 1, "Local", bold=True, bg=C["H1"], fc="FFFFFF", sz=9)
+    _cel(ws, 3, 2, "#", bold=True, bg=C["H1"], fc="FFFFFF", sz=9)
+    for i, dt in enumerate(todas_datas):
+        eh_fds = dt.weekday() >= 5
+        eh_ter = dt.weekday() == 1
+        bg = C["FDS"] if eh_fds else ("FFD7D7" if eh_ter else C["H3"])
+        lbl = dt.strftime("%d/%m")
+        _cel(ws, 3, 3+i, lbl, bold=True, bg=bg, sz=8)
+
+    # Linha 4: dias com anotações especiais
+    _cel(ws, 4, 1, "", bg=C["H1"])
+    _cel(ws, 4, 2, "", bg=C["H1"])
+    for i, dt in enumerate(todas_datas):
+        eh_fds = dt.weekday() >= 5
+        eh_ter = dt.weekday() == 1
+        eh_qui = dt.weekday() == 3
+        bg = C["FDS"] if eh_fds else ("FFD7D7" if eh_ter else C["H3"])
+        dia = DIAS_PT[dt.weekday()]
+        if eh_ter: dia += " ★16h"
+        if eh_qui: dia = "Qui/ENAMED"
+        _cel(ws, 4, 3+i, dia, bold=True, bg=bg, sz=8)
+
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 6
+    for i in range(n_datas):
+        ws.column_dimensions[get_column_letter(3+i)].width = 11
+    ws.row_dimensions[3].height = 16
+    ws.row_dimensions[4].height = 14
+
+    # Montar índice de quem está em cada (data, local, turno) → lista de alunos
+    from collections import defaultdict
+    # {(data_norm, local, turno): [alunos]}
+    grade = defaultdict(list)
+    for entry in escala_det:
+        data_raw = str(entry.get("data",""))
+        data_n = _normalizar_data(data_raw, ano_escala)
+        local = entry.get("local","")
+        turno = entry.get("turno","")
+        alunos = entry.get("alunos", [])
+        if isinstance(entry.get("nome"), str) and entry.get("nome"):
+            alunos = [entry["nome"]]
+        hor = entry.get("horario","")
+        for a in alunos:
+            grade[(data_n, local, turno)].append((a, hor))
+
+    # Agrupar turnos por local
+    locais_nomes = list(dict.fromkeys([entry.get("local","") for entry in escala_det if entry.get("local")]))
+
+    row = 5
+    for local in locais_nomes:
+        cor_loc = _cor_local(local, locais_cfg)
+
+        # Descobrir turnos deste local
+        turnos_local = list(dict.fromkeys([
+            entry.get("turno","") for entry in escala_det
+            if entry.get("local","") == local and entry.get("turno")
+        ]))
+
+        for turno in turnos_local:
+            # Separador entre blocos
+            _cel(ws, row, 1, "", bg="D0D9E8"); _cel(ws, row, 2, "", bg="D0D9E8")
+            for i in range(n_datas): _cel(ws, row, 3+i, "", bg="D0D9E8")
+            row += 1
+
+            # Header do turno
+            _cel(ws, row, 1, local, bold=True, bg=C["H1"], fc="FFFFFF", sz=9)
+            for i, dt in enumerate(todas_datas):
+                eh_fds = dt.weekday() >= 5
+                eh_ter = dt.weekday() == 1
+                eh_qui = dt.weekday() == 3
+                bg_h = C["FDS"] if eh_fds else ("FFD7D7" if eh_ter else C["H2"])
+                # Verificar se há ENAMED (quinta)
+                if eh_qui and regras.get("quinta",""):
+                    lbl_h = "ENAMED"
+                    bg_h = "FFCCCC"
+                else:
+                    lbl_h = turno.upper()[:5]
+                _cel(ws, row, 3+i, lbl_h, bold=True, bg=bg_h, fc="FFFFFF" if bg_h not in ["FFCCCC"] else "CC0000", sz=8)
+            _cel(ws, row, 2, turno[:6], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
+            row += 1
+
+            # Descobrir máx de alunos por turno/dia para este local
+            max_alunos = 0
+            for dt in todas_datas:
+                data_n = dt.strftime("%d/%m/%Y")
+                lst = grade.get((data_n, local, turno), [])
+                if not lst:
+                    data_n2 = dt.strftime("%d/%m")
+                    lst = grade.get((data_n2, local, turno), [])
+                max_alunos = max(max_alunos, len(lst))
+            max_alunos = max(max_alunos, 1)
+
+            # Linhas de alunos (slots)
+            for slot in range(max_alunos):
+                # Linha do nome
+                _cel(ws, row, 1, "", bg="F2F2F2")
+                _cel(ws, row, 2, f"#{slot+1}", bold=True, bg="F2F2F2", sz=8)
+                for i, dt in enumerate(todas_datas):
+                    eh_fds = dt.weekday() >= 5
+                    eh_ter = dt.weekday() == 1
+                    eh_qui = dt.weekday() == 3
+                    data_n = dt.strftime("%d/%m/%Y")
+                    lst = grade.get((data_n, local, turno), [])
+                    if not lst:
+                        data_n2 = dt.strftime("%d/%m")
+                        lst = grade.get((data_n2, local, turno), [])
+                    if eh_fds:
+                        bg_c = C["FDS"]
+                        nome_c = lst[slot][0].split()[0] if slot < len(lst) else ""
+                    elif eh_qui and not lst:
+                        bg_c = "FFCCCC"; nome_c = "ENAMED"
+                    else:
+                        bg_c = "FFD7D7" if eh_ter else "FFFFFF"
+                        if slot < len(lst):
+                            nome_c = lst[slot][0].split()[0] + " " + (lst[slot][0].split()[1][:1] + "." if len(lst[slot][0].split()) > 1 else "")
+                        else:
+                            bg_c = C["FDS"] if eh_fds else "F5F5F5"
+                            nome_c = ""
+                    _cel(ws, row, 3+i, nome_c, bg=bg_c, sz=8)
+                ws.row_dimensions[row].height = 13
+                row += 1
+
+                # Linha do horário
+                _cel(ws, row, 1, "", bg="F2F2F2")
+                _cel(ws, row, 2, "", bg="F2F2F2")
+                for i, dt in enumerate(todas_datas):
+                    eh_fds = dt.weekday() >= 5
+                    eh_qui = dt.weekday() == 3
+                    data_n = dt.strftime("%d/%m/%Y")
+                    lst = grade.get((data_n, local, turno), [])
+                    if not lst:
+                        lst = grade.get((dt.strftime("%d/%m"), local, turno), [])
+                    if eh_fds:
+                        bg_h = C["FDS"]; hor_c = lst[slot][1] if slot < len(lst) else ""
+                    elif eh_qui and not lst:
+                        bg_h = "FFCCCC"; hor_c = ""
+                    else:
+                        bg_h = C["H2"]
+                        hor_c = lst[slot][1] if slot < len(lst) else ""
+                    _cel(ws, row, 3+i, hor_c, bg=bg_h, fc="FFFFFF" if bg_h == C["H2"] else "000000", sz=7)
+                ws.row_dimensions[row].height = 11
+                row += 1
+
+    return ws
