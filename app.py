@@ -9,24 +9,31 @@ import io
 st.set_page_config(page_title="Gerador de Escalas Médicas", page_icon="🏥", layout="wide")
 
 # ── API ──────────────────────────────────────────────────────────────────────
-def _claude_http(api_key, mensagens, system_prompt="", max_tokens=8000):
-    """Chamada crua à API — thread-safe (NÃO usa st.*). Retorna texto ou None."""
+def _claude_http(api_key, mensagens, system_prompt="", max_tokens=8000, tentativas=4):
+    """Chamada crua à API — thread-safe (NÃO usa st.*). Re-tenta em rate limit / erro transitório."""
     if not api_key:
         return None
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-sonnet-4-6", "max_tokens": max_tokens,
-                  "system": system_prompt, "messages": mensagens},
-            timeout=180
-        )
-        result = resp.json()
-    except Exception:
-        return None
-    if "content" not in result:
-        return None
-    return result["content"][0]["text"]
+    import time
+    for t in range(tentativas):
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-sonnet-4-6", "max_tokens": max_tokens,
+                      "system": system_prompt, "messages": mensagens},
+                timeout=180
+            )
+            if resp.status_code in (429, 500, 502, 503, 529):  # rate limit / sobrecarga
+                time.sleep(2 * (t + 1))
+                continue
+            result = resp.json()
+        except Exception:
+            time.sleep(2 * (t + 1))
+            continue
+        if "content" in result:
+            return result["content"][0]["text"]
+        time.sleep(2 * (t + 1))  # erro lógico (ex: overloaded no corpo) -> tenta de novo
+    return None
 
 def chamar_claude(mensagens, system_prompt="", max_tokens=8000):
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
@@ -547,12 +554,14 @@ def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
     dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
     return dados, validar_escala(dados, config)
 
-def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config, num_semanas, ui=True):
-    """Gera a escala_detalhada por semana, TODAS em paralelo (rápido) e sem truncar a resposta."""
+def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config, num_semanas, ui=True, apenas_semanas=None):
+    """Gera a escala_detalhada por semana, em paralelo, com re-tentativa. apenas_semanas: gera só essas."""
     import concurrent.futures
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     limite = config.get("regras_especiais", {}).get("limite_ch", 40)
     n = max(int(num_semanas), 1)
+    alvo = sorted(apenas_semanas) if apenas_semanas else list(range(1, n + 1))
+    total = len(alvo) or 1
 
     def _msg(sem):
         return (
@@ -565,25 +574,34 @@ def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config,
             f"serviços de cada bloco. NÃO gere outras semanas."
         )
 
-    resultados, feitos = {}, 0
+    resultados = {}
     barra = st.progress(0.0, text="Gerando escala detalhada (semanas em paralelo)...") if ui else None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, n)) as ex:
-        futuros = {ex.submit(_claude_http, api_key, [{"role": "user", "content": _msg(sem)}],
-                             SYSTEM_DETALHE, 8000): sem for sem in range(1, n + 1)}
-        for fut in concurrent.futures.as_completed(futuros):
-            sem = futuros[fut]
-            novas = (extrair_json(fut.result()) or {}).get("escala_detalhada")
-            if novas:
-                for e in novas:
-                    e["semana"] = sem
-                resultados[sem] = novas
-            feitos += 1
-            if barra:
-                barra.progress(feitos / n, text=f"Escala detalhada: {feitos}/{n} semanas prontas")
+    # Concorrência moderada (evita rate limit) + re-tentativa das semanas que vierem vazias.
+    for rodada in range(3):
+        pendentes = [s for s in alvo if s not in resultados]
+        if not pendentes:
+            break
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(pendentes))) as ex:
+            futuros = {ex.submit(_claude_http, api_key, [{"role": "user", "content": _msg(sem)}],
+                                 SYSTEM_DETALHE, 8000): sem for sem in pendentes}
+            for fut in concurrent.futures.as_completed(futuros):
+                sem = futuros[fut]
+                novas = (extrair_json(fut.result()) or {}).get("escala_detalhada")
+                if novas:
+                    for e in novas:
+                        e["semana"] = sem
+                    resultados[sem] = novas
+                if barra:
+                    extra = "" if rodada == 0 else " (re-tentando)"
+                    barra.progress(len(resultados) / total, text=f"Escala detalhada: {len(resultados)}/{total} semanas prontas{extra}")
     if barra:
         barra.empty()
+    faltando = [s for s in alvo if s not in resultados]
+    if faltando and ui:
+        st.warning(f"⚠️ Não consegui gerar a(s) semana(s): {', '.join(map(str, faltando))}. "
+                   f"Clique em 'Completar semanas faltantes' para tentar de novo.")
     todas = []
-    for sem in range(1, n + 1):
+    for sem in alvo:
         todas.extend(resultados.get(sem, []))
     return todas
 
@@ -964,10 +982,13 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
 
     # ── Configuração global do rodízio ──────────────────────────────────────
     st.markdown("---")
-    st.markdown("**🔢 Distribuição de semanas entre os blocos (rodízio global)**")
+    st.markdown("**🔢 Durações dos períodos do rodízio (ex.: 3-3-2)**")
     st.caption(
-        f"Defina quantas semanas cada SG passa em cada bloco. "
-        f"A soma deve ser igual ao total de semanas ({int(num_semanas)})."
+        f"Estes números são as **durações dos períodos** do rodízio (1º período, 2º, 3º...), "
+        f"e a soma deve dar o total de semanas ({int(num_semanas)}). "
+        f"⚠️ Não é fixo por bloco: cada SG passa por TODOS os blocos, e quantas semanas ele fica "
+        f"em cada um depende de QUANDO chega lá (ex.: quem começa no último bloco faz o 1º período de "
+        f"3 semanas ali). O calendário define as semanas exatas de cada SG."
     )
 
     # Recuperar ou inicializar distribuição salva
@@ -1442,24 +1463,39 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
         dados_atual = json.loads(st.session_state.escala_gerada) if isinstance(st.session_state.escala_gerada, str) else st.session_state.escala_gerada
     except: pass
 
-    if not dados_atual.get("escala_detalhada"):
-        st.warning("⚠️ Escala detalhada vazia — as abas Subgrupo e Individual não terão dados.")
-        if st.button("🔄 Gerar escala detalhada agora", type="primary"):
-            briefing_atual = st.session_state.get("briefing_atual","")
-            cal = json.dumps(dados_atual.get("calendario_rodizio",[]), ensure_ascii=False)
-            cfg_atual = st.session_state.get("config_atual",{})
-            alunos_atual = cfg_atual.get("alunos_por_sg",{})
-            n_sem_atual = cfg_atual.get("num_semanas",8)
-            det = gerar_detalhada_por_semana(briefing_atual, cal, alunos_atual, cfg_atual, n_sem_atual)
-            if det:
-                dados_atual["escala_detalhada"] = det
+    # Detecta semanas faltantes (geração parcial por rate limit) além do caso totalmente vazio
+    cfg_atual = st.session_state.get("config_atual", {})
+    n_sem_atual = int(cfg_atual.get("num_semanas", 8))
+    det_atual = dados_atual.get("escala_detalhada") or []
+    semanas_presentes = {int(e.get("semana")) for e in det_atual
+                         if str(e.get("semana", "")).isdigit()}
+    semanas_faltantes = [s for s in range(1, n_sem_atual + 1) if s not in semanas_presentes]
+
+    if not det_atual or semanas_faltantes:
+        if not det_atual:
+            st.warning("⚠️ Escala detalhada vazia — as abas Subgrupo e Individual não terão dados.")
+            rotulo, alvo = "🔄 Gerar escala detalhada agora", None
+        else:
+            st.warning(f"⚠️ Faltam as semanas {', '.join(map(str, semanas_faltantes))} "
+                       f"(não geradas por limite da API). As demais já estão prontas.")
+            rotulo, alvo = "🧩 Completar semanas faltantes", semanas_faltantes
+        if st.button(rotulo, type="primary"):
+            briefing_atual = st.session_state.get("briefing_atual", "")
+            cal = json.dumps(dados_atual.get("calendario_rodizio", []), ensure_ascii=False)
+            alunos_atual = cfg_atual.get("alunos_por_sg", {})
+            novas = gerar_detalhada_por_semana(briefing_atual, cal, alunos_atual, cfg_atual,
+                                               n_sem_atual, apenas_semanas=alvo)
+            if novas:
+                # mantém o que já existia e adiciona as novas semanas
+                base = [e for e in det_atual if int(e.get("semana", 0)) not in {int(x.get("semana", 0)) for x in novas}]
+                dados_atual["escala_detalhada"] = base + novas
                 dados_atual["resumo_horas"] = recalcular_resumo_horas(dados_atual, cfg_atual)
                 val0 = validar_escala(dados_atual, cfg_atual)
                 if not val0["ok"]:
                     with st.spinner("⚖️ Rebalanceando turnos para respeitar as regras... ⏳"):
                         dados_atual, _ = corrigir_escala_loop(dados_atual, cfg_atual, briefing_atual, max_rodadas=1)
                 st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
-                st.success(f"✅ {len(det)} entradas geradas!")
+                st.success(f"✅ {len(novas)} entradas adicionadas!")
                 st.rerun()
             else:
                 st.error("A IA não retornou dados. Tente novamente.")
