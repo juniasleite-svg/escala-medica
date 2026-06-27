@@ -546,8 +546,10 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
                         hor_c = st.text_input("Horário", value=pl.get("cinderela","19-23h"), key=f"hc_{i}")
                         min_c = st.number_input("Mín/dia", 0, 10, int(pl.get("min_cind",0)), key=f"mnc_{i}")
                         max_c = st.number_input("Máx/dia", 0, 10, int(pl.get("max_cind",2)), key=f"mxc_{i}")
-                        dias_c = st.multiselect("Dias", ["Seg","Ter","Qua","Qui","Sex"],
-                            default=pl.get("dias_cind",["Sex"]), key=f"dc_{i}")
+                        dias_c_validos = ["Seg","Ter","Qua","Qui","Sex"]
+                        dias_c_default = [d for d in pl.get("dias_cind",["Sex"]) if d in dias_c_validos] or ["Sex"]
+                        dias_c = st.multiselect("Dias", dias_c_validos,
+                            default=dias_c_default, key=f"dc_{i}")
                     else:
                         hor_c,min_c,max_c,dias_c = "",0,0,[]
 
