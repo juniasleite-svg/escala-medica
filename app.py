@@ -525,6 +525,34 @@ def corrigir_escala_loop(dados, config, briefing="", max_rodadas=2):
     dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
     return dados, validar_escala(dados, config)
 
+def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config, num_semanas, ui=True):
+    """Gera a escala_detalhada UMA semana por vez, evitando que a resposta da IA seja truncada."""
+    limite = config.get("regras_especiais", {}).get("limite_ch", 40)
+    todas = []
+    barra = st.progress(0.0, text="Gerando escala detalhada semana a semana...") if ui else None
+    n = max(int(num_semanas), 1)
+    for sem in range(1, n + 1):
+        msg = (
+            f"Briefing:\n{briefing}\n\n"
+            f"Calendário de rodízio (todas as semanas):\n{calendario_json}\n\n"
+            f"Alunos por subgrupo:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\n"
+            f"Gere a escala_detalhada APENAS da SEMANA {sem}: todos os locais ativos nessa semana, "
+            f"todos os turnos em todos os dias úteis (e FDS se houver), com os alunos REVEZADOS para "
+            f"ninguém passar de {limite}h. Respeite o mín/máx por turno e divida os alunos entre os "
+            f"serviços de cada bloco. NÃO gere outras semanas."
+        )
+        resp = chamar_claude([{"role": "user", "content": msg}], system_prompt=SYSTEM_DETALHE, max_tokens=8000)
+        novas = (extrair_json(resp) or {}).get("escala_detalhada") if resp else None
+        if novas:
+            for e in novas:
+                e["semana"] = sem
+            todas.extend(novas)
+        if barra:
+            barra.progress(sem / n, text=f"Escala detalhada: semana {sem}/{n} ({len(todas)} entradas)")
+    if barra:
+        barra.empty()
+    return todas
+
 def mostrar_validacao(val):
     """Mostra o resultado da validação real na tela."""
     if val["ok"] and not val["buracos"]:
@@ -1344,30 +1372,23 @@ Extras: {regras_extras}
             st.session_state.turma_atual = turma
             cal_gerado = json.dumps(dados1.get("calendario_rodizio",[]), ensure_ascii=False)
 
-            with st.spinner("Passo 2/2 — Escala detalhada dia a dia... ⏳"):
-                resp2 = chamar_claude(
-                    [{"role": "user", "content": f"Briefing:\n{briefing}\n\nCalendário gerado:\n{cal_gerado}\n\nAlunos:\n{json.dumps(alunos_por_sg, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos em TODOS os dias das {num_semanas} semanas.\n\nLEMBRE-SE: reveze os turnos entre os alunos de cada subgrupo para que NENHUM aluno passe de {limite_ch}h/semana (não coloque o mesmo aluno em manhã+tarde+cinderela todo dia); respeite o mín/máx de alunos por turno de cada serviço; e em blocos com vários serviços, divida os alunos entre os serviços (nenhum serviço pode ficar vazio)."}],
-                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
-                )
+            st.caption("Passo 2/2 — Escala detalhada (gerada semana a semana para não truncar)")
+            det = gerar_detalhada_por_semana(briefing, cal_gerado, alunos_por_sg,
+                                             st.session_state.config_atual, num_semanas)
 
-            if resp2:
-                dados2 = extrair_json(resp2) or {}
-                det = dados2.get("escala_detalhada", [])
-                if det:
-                    dados1["escala_detalhada"] = det
-                    dados1["resumo_horas"] = recalcular_resumo_horas(dados1, st.session_state.config_atual)
-                    st.success(f"✅ Escala detalhada: {len(det)} entradas")
+            if det:
+                dados1["escala_detalhada"] = det
+                dados1["resumo_horas"] = recalcular_resumo_horas(dados1, st.session_state.config_atual)
+                st.success(f"✅ Escala detalhada: {len(det)} entradas")
 
-                    # Validação real + auto-correção (o Python é o juiz)
-                    val0 = validar_escala(dados1, st.session_state.config_atual)
-                    if not val0["ok"]:
-                        n_est, n_con = len(val0["estouros"]), len(val0["conflitos"])
-                        with st.spinner(f"⚖️ Rebalanceando turnos ({n_est} estouro(s) de CH, {n_con} conflito(s))... ⏳"):
-                            dados1, _ = corrigir_escala_loop(dados1, st.session_state.config_atual, briefing)
-                else:
-                    st.warning("⚠️ Passo 2 não retornou dados. Tente o botão abaixo.")
+                # Validação real + auto-correção (o Python é o juiz)
+                val0 = validar_escala(dados1, st.session_state.config_atual)
+                if not val0["ok"]:
+                    n_est, n_con = len(val0["estouros"]), len(val0["conflitos"])
+                    with st.spinner(f"⚖️ Rebalanceando turnos ({n_est} estouro(s) de CH, {n_con} conflito(s))... ⏳"):
+                        dados1, _ = corrigir_escala_loop(dados1, st.session_state.config_atual, briefing)
             else:
-                st.warning("⚠️ Passo 2 falhou (timeout). Tente novamente ou use a correção abaixo.")
+                st.warning("⚠️ Passo 2 não retornou dados. Tente o botão 'Gerar escala detalhada agora' abaixo.")
 
             st.session_state.escala_gerada = json.dumps(dados1, ensure_ascii=False)
             st.rerun()
@@ -1388,24 +1409,22 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
         if st.button("🔄 Gerar escala detalhada agora", type="primary"):
             briefing_atual = st.session_state.get("briefing_atual","")
             cal = json.dumps(dados_atual.get("calendario_rodizio",[]), ensure_ascii=False)
-            alunos_atual = st.session_state.get("config_atual",{}).get("alunos_por_sg",{})
-            n_sem_atual = st.session_state.get("config_atual",{}).get("num_semanas",8)
-            limite_atual = st.session_state.get("config_atual",{}).get("regras_especiais",{}).get("limite_ch",40)
-            with st.spinner("Gerando escala detalhada... ⏳"):
-                resp_det = chamar_claude(
-                    [{"role": "user", "content": f"Briefing:\n{briefing_atual}\n\nCalendário:\n{cal}\n\nAlunos:\n{json.dumps(alunos_atual, ensure_ascii=False)}\n\nGere a escala_detalhada completa para TODOS os alunos nas {n_sem_atual} semanas.\n\nLEMBRE-SE: reveze os turnos entre os alunos de cada subgrupo para que NENHUM aluno passe de {limite_atual}h/semana (não coloque o mesmo aluno em manhã+tarde+cinderela todo dia); respeite o mín/máx de alunos por turno de cada serviço; e em blocos com vários serviços, divida os alunos entre os serviços (nenhum serviço pode ficar vazio)."}],
-                    system_prompt=SYSTEM_DETALHE, max_tokens=16000
-                )
-            if resp_det:
-                dados2 = extrair_json(resp_det) or {}
-                det = dados2.get("escala_detalhada", [])
-                if det:
-                    dados_atual["escala_detalhada"] = det
-                    st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
-                    st.success(f"✅ {len(det)} entradas geradas!")
-                    st.rerun()
-                else:
-                    st.error("A IA não retornou dados. Tente novamente.")
+            cfg_atual = st.session_state.get("config_atual",{})
+            alunos_atual = cfg_atual.get("alunos_por_sg",{})
+            n_sem_atual = cfg_atual.get("num_semanas",8)
+            det = gerar_detalhada_por_semana(briefing_atual, cal, alunos_atual, cfg_atual, n_sem_atual)
+            if det:
+                dados_atual["escala_detalhada"] = det
+                dados_atual["resumo_horas"] = recalcular_resumo_horas(dados_atual, cfg_atual)
+                val0 = validar_escala(dados_atual, cfg_atual)
+                if not val0["ok"]:
+                    with st.spinner("⚖️ Rebalanceando turnos para respeitar as regras... ⏳"):
+                        dados_atual, _ = corrigir_escala_loop(dados_atual, cfg_atual, briefing_atual)
+                st.session_state.escala_gerada = json.dumps(dados_atual, ensure_ascii=False)
+                st.success(f"✅ {len(det)} entradas geradas!")
+                st.rerun()
+            else:
+                st.error("A IA não retornou dados. Tente novamente.")
 
     mostrar_resultado(
         st.session_state.escala_gerada,
