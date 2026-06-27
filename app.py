@@ -464,10 +464,66 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
                 nome_l = st.text_input("Nome do local", value=pl.get("nome",""), key=f"ln_{i}", placeholder="ex: Enfermaria")
                 abrev_l = st.text_input("Abreviação", value=pl.get("abrev",""), key=f"la_{i}", placeholder="ex: Enf")
             with col_b:
-                obs_l = st.text_input("Observações", value=pl.get("obs",""), key=f"lobs_{i}", placeholder="ex: FDS feito pelos alunos do Amb")
-                unir = st.checkbox("🔗 Unir com outro serviço", value=bool(pl.get("servico2","")), key=f"lunir_{i}")
-                s2_nome = st.text_input("2º serviço", value=pl.get("servico2",""), key=f"ln2_{i}") if unir else ""
-                s2_obs = st.text_input("2º serviço (regras)", value=pl.get("servico2_obs",""), key=f"lobs2_{i}") if unir else ""
+                obs_l = st.text_input("Observações gerais", value=pl.get("obs",""), key=f"lobs_{i}", placeholder="ex: FDS feito pelos alunos do Amb")
+                unir = st.checkbox("🔗 Vincular 2º serviço neste bloco", value=bool(pl.get("servico2","")), key=f"lunir_{i}",
+                    help="Ex: Bloco Pediátrico = Enfermaria + PA Mandic no mesmo rodízio")
+
+            # 2º serviço com turnos completos
+            s2 = {}
+            if unir:
+                pl2 = pl.get("servico2_cfg", {})
+                st.markdown("**🔗 2º Serviço vinculado:**")
+                c2a, c2b = st.columns(2)
+                with c2a:
+                    s2_nome = st.text_input("Nome do 2º serviço", value=pl.get("servico2",""), key=f"ln2_{i}", placeholder="ex: PA Mandic")
+                    s2_abrev = st.text_input("Abreviação", value=pl2.get("abrev","PA"), key=f"la2_{i}")
+                with c2b:
+                    s2_obs = st.text_input("Observações", value=pl.get("servico2_obs",""), key=f"lobs2_{i}")
+                    s2_quem = st.text_input("Quem faz?", value=pl2.get("quem",""), key=f"lquem2_{i}",
+                        placeholder="ex: todos os alunos do bloco | apenas SG par")
+                st.markdown("**⏰ Turnos do 2º serviço (dias úteis):**")
+                t2_1, t2_2, t2_3 = st.columns(3)
+                with t2_1:
+                    st.markdown("**🌅 Manhã**")
+                    s2_tem_m = st.checkbox("Tem manhã?", value=bool(pl2.get("manha","")), key=f"s2tm_{i}")
+                    s2_hor_m = st.text_input("Horário", value=pl2.get("manha","07-13h"), key=f"s2hm_{i}") if s2_tem_m else ""
+                    s2_min_m = st.number_input("Mín/dia", 0, 20, int(pl2.get("min_manha",0)), key=f"s2mnm_{i}") if s2_tem_m else 0
+                    s2_max_m = st.number_input("Máx/dia", 0, 20, int(pl2.get("max_manha",4)), key=f"s2mxm_{i}") if s2_tem_m else 0
+                with t2_2:
+                    st.markdown("**🌇 Tarde**")
+                    s2_tem_t = st.checkbox("Tem tarde?", value=bool(pl2.get("tarde","")), key=f"s2tt_{i}")
+                    s2_hor_t = st.text_input("Horário", value=pl2.get("tarde","13-19h"), key=f"s2ht_{i}") if s2_tem_t else ""
+                    s2_min_t = st.number_input("Mín/dia", 0, 20, int(pl2.get("min_tarde",0)), key=f"s2mnt_{i}") if s2_tem_t else 0
+                    s2_max_t = st.number_input("Máx/dia", 0, 20, int(pl2.get("max_tarde",4)), key=f"s2mxt_{i}") if s2_tem_t else 0
+                with t2_3:
+                    st.markdown("**🌙 Cinderela**")
+                    s2_tem_c = st.checkbox("Tem cinderela?", value=bool(pl2.get("cinderela","")), key=f"s2tc_{i}")
+                    s2_hor_c = st.text_input("Horário", value=pl2.get("cinderela","19-23h"), key=f"s2hc_{i}") if s2_tem_c else ""
+                    s2_min_c = st.number_input("Mín/dia", 0, 10, int(pl2.get("min_cind",0)), key=f"s2mnc_{i}") if s2_tem_c else 0
+                    s2_max_c = st.number_input("Máx/dia", 0, 10, int(pl2.get("max_cind",2)), key=f"s2mxc_{i}") if s2_tem_c else 0
+                st.markdown("**🏖️ FDS do 2º serviço:**")
+                s2_tem_fds = st.checkbox("Tem FDS?", value=pl2.get("fds",False), key=f"s2fds_{i}")
+                if s2_tem_fds:
+                    sf1, sf2 = st.columns(2)
+                    with sf1:
+                        s2_hor_fds_m = st.text_input("Manhã FDS", value=pl2.get("fds_manha","07-12h"), key=f"s2fdsm_{i}")
+                        s2_max_fds_m = st.number_input("Máx manhã FDS", 0, 10, int(pl2.get("fds_max_manha",2)), key=f"s2mxfm_{i}")
+                    with sf2:
+                        s2_hor_fds_t = st.text_input("Tarde FDS", value=pl2.get("fds_tarde","13-19h"), key=f"s2fdst_{i}")
+                        s2_max_fds_t = st.number_input("Máx tarde FDS", 0, 10, int(pl2.get("fds_max_tarde",2)), key=f"s2mxft_{i}")
+                else:
+                    s2_hor_fds_m = s2_hor_fds_t = ""
+                    s2_max_fds_m = s2_max_fds_t = 0
+                s2 = {
+                    "nome": s2_nome, "abrev": s2_abrev, "obs": s2_obs, "quem": s2_quem,
+                    "manha": s2_hor_m, "min_manha": int(s2_min_m), "max_manha": int(s2_max_m),
+                    "tarde": s2_hor_t, "min_tarde": int(s2_min_t), "max_tarde": int(s2_max_t),
+                    "cinderela": s2_hor_c, "min_cind": int(s2_min_c), "max_cind": int(s2_max_c),
+                    "fds": s2_tem_fds, "fds_manha": s2_hor_fds_m, "fds_max_manha": int(s2_max_fds_m),
+                    "fds_tarde": s2_hor_fds_t, "fds_max_tarde": int(s2_max_fds_t),
+                }
+            else:
+                s2_nome = ""; s2_obs = ""
 
             # Duração por SG
             n_sgs_atual = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
@@ -619,7 +675,7 @@ with st.expander("📍 Bloco 3 — Locais de Rodízio", expanded=True):
 
             locais.append({
                 "nome": nome_l, "abrev": abrev_l, "obs": obs_l,
-                "servico2": s2_nome, "servico2_obs": s2_obs,
+                "servico2": s2_nome, "servico2_obs": s2_obs, "servico2_cfg": s2,
                 "duracao_por_sg": duracao_sgs,
                 "manha": hor_m if tem_m else "", "min_manha": int(min_m), "max_manha": int(max_m),
                 "bloqueios_manha": bloqueios_m_list,
