@@ -307,10 +307,10 @@ if modo == "📂 Importar escala existente e modificar":
     if arquivo_escala:
         if st.button("🤖 Analisar e preencher formulário com IA", type="primary", use_container_width=True):
             with st.spinner("Lendo e interpretando sua escala..."):
-                xls = pd.ExcelFile(arquivo_escala)
+                xls = pd.ExcelFile(arquivo_escala, engine="openpyxl")
                 conteudo = ""
                 for sheet in xls.sheet_names:
-                    df = pd.read_excel(arquivo_escala, sheet_name=sheet, header=None)
+                    df = pd.read_excel(arquivo_escala, engine="openpyxl", sheet_name=sheet, header=None)
                     conteudo += f"\n\n=== ABA: {sheet} ===\n{df.fillna('').to_string(index=False, header=False)}"
                     if len(conteudo) > 12000:
                         conteudo = conteudo[:12000] + "\n...[truncado]"
@@ -431,12 +431,12 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
                 if opcao_sg != "Manter atual" and st.button("🔄 Recarregar da planilha"):
                     try:
                         n_alvo = int(opcao_sg.split()[0])
-                        xls_a = pd.ExcelFile(arquivo_alunos)
+                        xls_a = pd.ExcelFile(arquivo_alunos, engine="openpyxl")
                         sheets_g = [s for s in xls_a.sheet_names if "GRUPO" in s.upper()]
                         gp = pf.get("grupo","").upper().replace("GRUPO","").strip()
                         sh = next((s for s in sheets_g if gp in s.upper()), sheets_g[0] if sheets_g else None)
                         if sh:
-                            df_r = pd.read_excel(arquivo_alunos, sheet_name=sh)
+                            df_r = pd.read_excel(arquivo_alunos, engine="openpyxl", sheet_name=sh)
                             if "OPÇÃO" in df_r.columns:
                                 op = next((o for o in df_r["OPÇÃO"].dropna().unique() if f"{n_alvo} SG" in str(o)), None)
                                 if op:
@@ -453,11 +453,11 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
 
     elif arquivo_alunos:
         try:
-            xls2 = pd.ExcelFile(arquivo_alunos)
+            xls2 = pd.ExcelFile(arquivo_alunos, engine="openpyxl")
             grupos_disp = [s for s in xls2.sheet_names if "GRUPO" in s.upper()]
             grupo_sel = st.selectbox("Selecione o grupo", grupos_disp) if grupos_disp else None
             if grupo_sel:
-                df_g = pd.read_excel(arquivo_alunos, sheet_name=grupo_sel)
+                df_g = pd.read_excel(arquivo_alunos, engine="openpyxl", sheet_name=grupo_sel)
                 if "OPÇÃO" in df_g.columns:
                     opcoes = df_g["OPÇÃO"].dropna().unique()
                     opcao_sel = st.selectbox("Opção de subgrupos", opcoes)
@@ -670,39 +670,19 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
             n_srv_bloco = 1 + st.session_state.get(key_n_srv, 0)
             pl_dur_bloco = pl.get("duracao_por_sg", {})
 
-            # Valor padrão: semanas totais ÷ número de locais (blocos)
-            # Ex: 8 sem ÷ 3 locais = ~2-3 sem por local por SG
-            default_sem_sg = max(1, int(num_semanas) // max(int(num_locais), 1))
-
             col_dur1, col_dur2 = st.columns(2)
             with col_dur1:
                 sem_por_sg = st.number_input(
-                    f"Semanas que cada SG passa neste bloco",
+                    f"Semanas por SG neste bloco",
                     min_value=1, max_value=int(num_semanas),
-                    value=int(pl.get("sem_por_sg", default_sem_sg)),
+                    value=int(pl.get("sem_por_sg", int(num_semanas) // max(n_sgs_total // n_srv_bloco, 1) if n_srv_bloco else int(num_semanas))),
                     key=f"sem_sg_{i}",
-                    help=(
-                        f"Quantas semanas cada SG fica neste bloco (passando por todos os serviços do bloco). "
-                        f"Ex: 8 semanas ÷ {int(num_locais)} blocos = {default_sem_sg} sem/bloco por SG."
-                    )
+                    help=f"Quantas semanas cada SG fica neste bloco total? Com {n_srv_bloco} serviço(s) e {n_sgs_total} SGs, cada serviço recebe ~{n_sgs_total // n_srv_bloco if n_srv_bloco else n_sgs_total} SGs."
                 )
             with col_dur2:
-                # Quantos SGs ficam simultaneamente em cada serviço do bloco
+                # Calcular automaticamente a distribuição
                 sgs_por_srv = max(n_sgs_total // n_srv_bloco, 1) if n_srv_bloco > 0 else n_sgs_total
-                # Semanas totais que o bloco ocupa no calendário = sem_por_sg × n_sgs_total ÷ n_srv_bloco
-                sem_bloco_total = sem_por_sg * n_sgs_total // n_srv_bloco if n_srv_bloco > 0 else sem_por_sg * n_sgs_total
-                if n_srv_bloco > 1:
-                    st.info(
-                        f"📊 **{n_sgs_total} SGs** passam por este bloco, **{sgs_por_srv} SGs simultâneos** por serviço. "
-                        f"Cada SG fica **{sem_por_sg} sem** no bloco (rodando pelos {n_srv_bloco} serviços). "
-                        f"Duração total do bloco no calendário: **{sem_bloco_total} semanas**."
-                    )
-                else:
-                    st.info(
-                        f"📊 **{n_sgs_total} SGs** passam por este bloco, **{sgs_por_srv} SGs simultâneos**. "
-                        f"Cada SG fica **{sem_por_sg} sem**. "
-                        f"Duração total no calendário: **{sem_bloco_total} semanas**."
-                    )
+                st.info(f"📊 {n_sgs_total} SGs ÷ {n_srv_bloco} serviço(s) = **{sgs_por_srv} SGs/serviço** × {sem_por_sg} sem = {sgs_por_srv * sem_por_sg} sem/bloco")
 
             # Gerar duracao_sgs automaticamente
             duracao_sgs_bloco = {str(sg+1): int(sem_por_sg) for sg in range(n_sgs_total)}
@@ -805,40 +785,33 @@ if st.button("🚀 Gerar Escala com IA", type="primary", use_container_width=Tru
             n_sgs_bloco = len(alunos_por_sg)
             sgs_por_srv = max(n_sgs_bloco // len(servs), 1) if servs else n_sgs_bloco
             nome_bl = loc.get("nome_bloco") or loc.get("nome","") or f"Bloco {idx_loc+1}"
-            sem_sg = int(loc.get("sem_por_sg", int(num_semanas) // max(int(num_locais),1)))
 
             if len(servs) > 1:
                 nomes = [s.get("nome","?") for s in servs]
-                # RODÍZIO INTERNO: cada SG passa por TODOS os serviços do bloco
-                # A divisão de SGs é SIMULTÂNEA (quem está em cada serviço ao mesmo tempo),
-                # não sequencial — todos os SGs passarão por todos os serviços ao longo do tempo.
+                # Distribuir SGs pelos serviços
+                sgs_list = list(alunos_por_sg.keys())
                 srv_desc_list = []
                 for j, srv in enumerate(servs):
-                    # Em qualquer semana deste bloco, este serviço atende sgs_por_srv SGs simultaneamente
-                    srv_desc_list.append(
-                        f"  - {srv.get('nome','?')} → atende {sgs_por_srv} SGs simultaneamente por vez"
-                    )
+                    sg_inicio = j * sgs_por_srv + 1
+                    sg_fim = min((j+1) * sgs_por_srv, n_sgs_bloco)
+                    sgs_srv = f"SG{sg_inicio}" if sg_inicio == sg_fim else f"SG{sg_inicio}-SG{sg_fim}"
+                    srv_desc_list.append(f"  - {srv.get('nome','?')} → recebe {sgs_srv} ({sgs_por_srv} SGs)")
+                    # Adicionar à lista de serviços com nome explícito
                     srv_copy = dict(srv)
                     srv_copy["bloco"] = nome_bl
-                    srv_copy["sgs_responsaveis"] = list(range(1, n_sgs_bloco+1))  # TODOS os SGs passarão por aqui
+                    srv_copy["sgs_responsaveis"] = list(range(sg_inicio, sg_fim+1))
                     todos_servicos.append(srv_copy)
-
-                sem_bloco_total = sem_sg * n_sgs_bloco // len(servs)
                 blocos_desc.append(
-                    f"Bloco '{nome_bl}' ({' + '.join(nomes)}) — {len(servs)} serviços com RODÍZIO INTERNO:\n" +
-                    f"  • Cada SG fica {sem_sg} semanas neste bloco no total\n"
-                    f"  • Dentro do bloco, os SGs se dividem entre os {len(servs)} serviços E rodam (cada SG passa por todos os serviços)\n"
-                    f"  • {sgs_por_srv} SGs em cada serviço simultaneamente → após {sem_sg // len(servs) if sem_sg >= len(servs) else 1} sem, trocam\n"
-                    f"  • Duração total do bloco no calendário: ~{sem_bloco_total} semanas\n" +
+                    f"Bloco '{nome_bl}' ({' + '.join(nomes)}) — {len(servs)} serviços EXCLUSIVOS:\n" +
                     "\n".join(srv_desc_list) +
-                    f"\n  ⚠️ NUNCA coloque o mesmo aluno em 2 serviços deste bloco no MESMO turno/dia"
+                    f"\n  ⚠️ NUNCA coloque o mesmo aluno em 2 serviços deste bloco simultaneamente"
                 )
             else:
                 srv_copy = dict(loc)
                 srv_copy["bloco"] = nome_bl
                 srv_copy["sgs_responsaveis"] = list(range(1, n_sgs_bloco+1))
                 todos_servicos.append(srv_copy)
-                blocos_desc.append(f"Bloco '{nome_bl}': {loc.get('nome','?')} — serviço único ({sem_sg} sem/SG)")
+                blocos_desc.append(f"Bloco '{nome_bl}': {loc.get('nome','?')} — serviço único")
 
         briefing = f"""
 # BRIEFING DE ESCALA MÉDICA
@@ -853,13 +826,10 @@ Início: {data_inicio} | Semanas: {num_semanas}
 ## ESTRUTURA DE BLOCOS E SERVIÇOS
 {chr(10).join(blocos_desc)}
 
-## REGRA FUNDAMENTAL DE BLOCOS COM MÚLTIPLOS SERVIÇOS
-Quando um bloco tem múltiplos serviços (ex: BP-Enfermaria + PA Mandic):
-- Os SGs se DIVIDEM simultaneamente entre os serviços (ex: SG1+SG2 na Enf enquanto SG3+SG4 no PA)
-- Após algumas semanas, TROCAM de serviço dentro do bloco (SG1+SG2 vão para o PA, SG3+SG4 para a Enf)
-- TODOS os SGs passarão por TODOS os serviços do bloco ao longo do tempo
-- A exclusividade é TEMPORAL: no mesmo dia/turno, um aluno está em UM único serviço
-- Na escala_detalhada, use o nome EXATO de cada serviço como "local" (ex: "Enfermaria" e "PA Mandic" como locais distintos)
+## REGRA FUNDAMENTAL DE EXCLUSIVIDADE
+Quando um bloco tem múltiplos serviços, os SGs são DIVIDIDOS entre eles.
+Cada SG vai para UM e apenas UM serviço por vez.
+Na escala_detalhada, use o nome EXATO de cada serviço como "local" (ex: "BP-Enfermaria" e "PA Mandic" como locais distintos, NUNCA juntos para o mesmo aluno no mesmo turno).
 
 ## DETALHES DE CADA SERVIÇO
 {json.dumps(todos_servicos, ensure_ascii=False, indent=2)}
