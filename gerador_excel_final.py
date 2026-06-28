@@ -782,11 +782,15 @@ def _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, se
                 aluno_datas = escala_por_aluno.get(nome, {})
                 valor = (aluno_datas.get(data_str) or
                          aluno_datas.get(data_str2) or
-                         aluno_datas.get(data_str3) or "—")
+                         aluno_datas.get(data_str3) or "")
+                eh_fds = dt.weekday() >= 5
 
                 # Cor da célula
-                if valor == "—":
-                    cor_cel = C["FDS_CELL"] if dt.weekday() >= 5 else "FFFFFF"
+                if not valor:
+                    if eh_fds:
+                        valor = "—"; cor_cel = C["FDS_CELL"]
+                    else:
+                        valor = "Área Verde"; cor_cel = C["VERDE"]  # dia útil sem turno
                 else:
                     local_nome = valor.split("(")[0] if "(" in valor else valor
                     cor_cel = _cor_local(local_nome, locais_cfg)
@@ -836,6 +840,7 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
         _cel(ws, 3, 4+i, dt.strftime("%d/%m"), bold=True, bg=bg, sz=8)
     ws.row_dimensions[3].height = 16
 
+    ra_map = config.get("ra_por_aluno", {}) or {}
     row = 4
     for sg_key in sorted(alunos_por_sg.keys(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
         sg_num = int(sg_key) if sg_key.isdigit() else 1
@@ -845,7 +850,7 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
             cor_nome = C["ALT1"] if i_al % 2 == 0 else C["ALT2"]
             _cel(ws, row, 1, nome, halign="left", bg=cor_sg, bold=True, sz=9)
             _cel(ws, row, 2, f"SG{sg_num}", bold=True, bg=cor_sg, sz=9)
-            _cel(ws, row, 3, "", bg=cor_nome, sz=9)  # RA
+            _cel(ws, row, 3, str(ra_map.get(str(nome).strip(), "")), bg=cor_nome, sz=9)  # RA
 
             for i, dt in enumerate(todas_datas):
                 data_str = dt.strftime("%d/%m/%Y")
@@ -854,10 +859,14 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
                 aluno_datas = escala_por_aluno.get(nome, {})
                 valor = (aluno_datas.get(data_str) or
                          aluno_datas.get(data_str2) or
-                         aluno_datas.get(data_str3) or "—")
+                         aluno_datas.get(data_str3) or "")
+                eh_fds = dt.weekday() >= 5
 
-                if valor == "—":
-                    cor_cel = C["FDS_CELL"] if dt.weekday() >= 5 else "FFFFFF"
+                if not valor:
+                    if eh_fds:
+                        valor = "—"; cor_cel = C["FDS_CELL"]
+                    else:
+                        valor = "Área Verde"; cor_cel = C["VERDE"]  # dia útil sem turno
                 else:
                     local_nome = valor.split("(")[0] if "(" in valor else valor
                     cor_cel = _cor_local(local_nome, locais_cfg)
