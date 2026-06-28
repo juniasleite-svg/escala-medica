@@ -1318,6 +1318,250 @@ def mostrar_validacao(val):
                    "ou reduza a CH mínima alvo no Bloco 5. Se já usa complemento e ainda falta, "
                    "o serviço de destino atingiu o **máximo de alunos** — aumente o máx/dia dele.")
 
+# ── Pedidos extraordinários: avaliação e trocas automáticas ──────────────────
+import unicodedata as _ud
+
+def _sem_acento(s):
+    return "".join(c for c in _ud.normalize("NFKD", str(s or "")) if not _ud.combining(c)).strip().lower()
+
+def _data_ddmm(s):
+    """Normaliza 'DD/MM/AAAA' ou 'DD/MM' -> 'DD/MM'."""
+    p = str(s or "").strip().split("/")
+    if len(p) >= 2:
+        try:
+            return f"{int(p[0]):02d}/{int(p[1]):02d}"
+        except ValueError:
+            pass
+    return str(s or "").strip()
+
+def _extrair_datas(texto):
+    """Extrai todas as datas DD/MM ou DD/MM/AAAA de um texto (ignora anotações como '(Sex)')."""
+    return _re_val.findall(r"\d{1,2}/\d{1,2}(?:/\d{2,4})?", str(texto or ""))
+
+def _roster_nomes(dados):
+    nomes = set()
+    for e in (dados.get("escala_detalhada") or []):
+        for a in _alunos_entrada(e):
+            nomes.add(a)
+    return sorted(nomes)
+
+def _casar_aluno(nome_pedido, roster):
+    """Acha na escala o nome que melhor casa com o do pedido (sem acento, por tokens)."""
+    toks_alvo = _sem_acento(nome_pedido).split()
+    alvo = set(toks_alvo)
+    if not alvo:
+        return None
+    primeiro = toks_alvo[0]
+    need = min(2, len(toks_alvo))   # nomes de 1 palavra casam por 1 token
+    melhor, score = None, -1
+    for nome in roster:
+        toks = set(_sem_acento(nome).split())
+        inter = len(alvo & toks)
+        if inter < need:
+            continue
+        s = inter + (0.5 if primeiro in toks else 0)
+        if s > score:
+            score, melhor = s, nome
+    return melhor
+
+def avaliar_pedidos_extraordinarios(dados, config, pedidos):
+    """Para cada (aluno, data) diz se o aluno está escalado e onde.
+    pedidos: [{'aluno': str, 'datas': [str]}]. Retorna lista de registros."""
+    det = dados.get("escala_detalhada") or []
+    roster = _roster_nomes(dados)
+    idx = _dd(list)
+    for i, e in enumerate(det):
+        dd = _data_ddmm(e.get("data"))
+        for a in _alunos_entrada(e):
+            idx[(a, dd)].append(i)
+    datas_escala = {_data_ddmm(e.get("data")) for e in det}
+    linhas = []
+    for p in pedidos:
+        nome_real = _casar_aluno(p.get("aluno", ""), roster)
+        for d in p.get("datas", []):
+            dd = _data_ddmm(d)
+            reg = {"aluno_pedido": p.get("aluno", ""), "aluno_escala": nome_real or "(não encontrado)",
+                   "data": dd, "no_periodo": dd in datas_escala, "escalado": False, "entradas": []}
+            if nome_real:
+                for i in idx.get((nome_real, dd), []):
+                    e = det[i]
+                    reg["escalado"] = True
+                    reg["entradas"].append({"idx": i, "local": e.get("local", ""), "turno": e.get("turno", ""),
+                                            "horario": e.get("horario", ""), "dia": e.get("dia", ""),
+                                            "semana": e.get("semana", ""), "horas": _horas_entrada(e)})
+            linhas.append(reg)
+    return linhas
+
+def _faixa_servico(config, local, turno_key, dia):
+    """(min, max) de alunos para um local/turno/dia, do Bloco 3."""
+    eh_fds = _dia_curto(dia) in ("Sab", "Dom")
+    chave = "turnos_fds" if eh_fds else "turnos"
+    for s in _servicos_config(config):
+        if turno_key in s.get(chave, {}) and _nome_bate(s["nomes"], _norm(local)):
+            return s[chave][turno_key]
+    return (0, None)
+
+def _ch_semana(det, al, sem):
+    return sum(_horas_entrada(e) for e in det if e.get("semana") == sem and al in _alunos_entrada(e))
+
+def _conta_turno(det, local, turno, sem, dia):
+    tk = _turno_key(turno)
+    return sum(len(_alunos_entrada(e)) for e in det
+               if e.get("local") == local and _turno_key(e.get("turno")) == tk
+               and e.get("semana") == sem and _dia_curto(e.get("dia")) == _dia_curto(dia))
+
+def _achar_substituto(det, config, al_fora, local, turno, sem, dia, horas, limite_abs):
+    """Colega da coorte do serviço, livre nesse turno/dia, que cabe sem furar máx nem CH."""
+    tk = _turno_key(turno)
+    _, mx = _faixa_servico(config, local, tk, dia)
+    ocupados = set()
+    for e in det:
+        if (e.get("semana") == sem and _dia_curto(e.get("dia")) == _dia_curto(dia)
+                and _turno_key(e.get("turno")) == tk):
+            ocupados.update(_alunos_entrada(e))
+    coorte = set()
+    for e in det:
+        if e.get("local") == local:
+            coorte.update(_alunos_entrada(e))
+    cand = [c for c in coorte if c != al_fora and c not in ocupados
+            and _ch_semana(det, c, sem) + horas <= limite_abs]
+    if mx is not None and _conta_turno(det, local, turno, sem, dia) >= mx:
+        return None
+    cand.sort(key=lambda c: _ch_semana(det, c, sem))
+    return cand[0] if cand else None
+
+def _achar_reposicao(det, config, al, local, turno_perdido, sem, limite_abs, datas_proibidas=None):
+    """Outra entrada no MESMO local, em DIA diferente dos pedidos, onde o aluno cabe
+    (livre no turno, vaga < máx, CH ok). datas_proibidas: set de 'DD/MM' a evitar."""
+    tk_perd = _turno_key(turno_perdido)
+    datas_proibidas = datas_proibidas or set()
+    ocup = set()
+    for e in det:
+        if al in _alunos_entrada(e):
+            ocup.add((e.get("semana"), _dia_curto(e.get("dia")), _turno_key(e.get("turno"))))
+    melhor = None
+    for i, e in enumerate(det):
+        if e.get("local") != local:
+            continue
+        if al in _alunos_entrada(e):
+            continue
+        if _data_ddmm(e.get("data")) in datas_proibidas:   # nunca repor num dia pedido
+            continue
+        sem_e, dia_e = e.get("semana"), _dia_curto(e.get("dia"))
+        tk_e = _turno_key(e.get("turno"))
+        if (sem_e, dia_e, tk_e) in ocup:
+            continue
+        _, mx_e = _faixa_servico(config, local, tk_e, e.get("dia"))
+        n = len(_alunos_entrada(e))
+        if mx_e is not None and n >= mx_e:
+            continue
+        if _ch_semana(det, al, sem_e) + _horas_entrada(e) > limite_abs:
+            continue
+        score = (0 if tk_e == tk_perd else 1, n)   # mesmo turno primeiro, depois menos cheio
+        if melhor is None or score < melhor[0]:
+            melhor = (score, i)
+    return melhor[1] if melhor else None
+
+def aplicar_trocas_pedidos(dados, config, avaliacao):
+    """Dispensa o aluno dos dias pedidos e tenta repor o serviço em outro dia,
+    respeitando mín/máx por local/turno (Bloco 3) e a CH absoluta. Retorna (dados_novo, relatorio)."""
+    import copy
+    dados = copy.deepcopy(dados)
+    det = dados.get("escala_detalhada") or []
+    limite_abs = int(config.get("regras_especiais", {}).get("limite_abs", 43))
+    # datas que cada aluno pediu para NÃO ser escalado (nunca repor nesses dias)
+    proibidas = _dd(set)
+    for reg in avaliacao:
+        proibidas[reg["aluno_escala"]].add(_data_ddmm(reg["data"]))
+    relatorio = []
+    for reg in avaliacao:
+        if not reg.get("escalado"):
+            continue
+        al = reg["aluno_escala"]
+        for ent in reg["entradas"]:
+            i = ent["idx"]
+            e = det[i]
+            local, turno = e.get("local", ""), e.get("turno", "")
+            sem, dia = e.get("semana", ""), e.get("dia", "")
+            horas = _horas_entrada(e)
+            tk = _turno_key(turno)
+            mn, _ = _faixa_servico(config, local, tk, dia)
+            antes = _conta_turno(det, local, turno, sem, dia)
+            # 1) dispensa
+            e["alunos"] = [x for x in _alunos_entrada(e) if x != al]
+            e.pop("nome", None)
+            depois = antes - 1
+            item = {"aluno": al, "data": reg["data"], "dia": _dia_curto(dia), "servico": f"{local} / {turno}",
+                    "substituto": "—", "reposicao": "—",
+                    "cobertura": f"{antes}→{depois} (mín {mn})", "status": "ok"}
+            # 2) cobertura mínima
+            if depois < mn:
+                sub = _achar_substituto(det, config, al, local, turno, sem, dia, horas, limite_abs)
+                if sub:
+                    det[i]["alunos"] = _alunos_entrada(det[i]) + [sub]
+                    item["substituto"] = sub
+                    item["cobertura"] = f"{antes}→{depois}→{depois+1} (mín {mn})"
+                else:
+                    item["status"] = "atenção: cobertura abaixo do mínimo (sem substituto livre)"
+            # 3) reposição no mesmo serviço
+            j = _achar_reposicao(det, config, al, local, turno, sem, limite_abs, proibidas.get(al))
+            if j is not None:
+                det[j]["alunos"] = _alunos_entrada(det[j]) + [al]
+                item["reposicao"] = f'{_data_ddmm(det[j].get("data"))} ({_dia_curto(det[j].get("dia"))}) {det[j].get("turno")}'
+            else:
+                item["reposicao"] = "pendente (sem vaga no mesmo serviço)"
+                if item["status"] == "ok":
+                    item["status"] = "atenção: reposição pendente"
+            relatorio.append(item)
+    dados["escala_detalhada"] = det
+    dados["resumo_horas"] = recalcular_resumo_horas(dados, config)
+    return dados, relatorio
+
+def _parse_pedidos_editor(df):
+    """DataFrame com colunas Aluno / Datas -> [{'aluno','datas':[...]}]."""
+    pedidos = []
+    for _, row in df.iterrows():
+        aluno = str(row.get("Aluno", "") or "").strip()
+        datas_raw = str(row.get("Datas", "") or "").strip()
+        if not aluno or not datas_raw:
+            continue
+        datas = _extrair_datas(datas_raw)
+        if datas:
+            pedidos.append({"aluno": aluno, "datas": datas})
+    return pedidos
+
+def _pedidos_de_arquivo(file):
+    """Lê CSV/XLSX de pedidos. Aceita coluna de aluno + 1+ colunas de data
+    (uma data por linha OU várias datas na mesma célula). Agrupa por aluno."""
+    try:
+        if file.name.lower().endswith(".csv"):
+            df = pd.read_csv(file, dtype=str, keep_default_na=False, sep=None, engine="python")
+        else:
+            df = pd.read_excel(file, dtype=str)
+    except Exception:
+        return None
+    df.columns = [str(c).strip() for c in df.columns]
+    col_aluno = next((c for c in df.columns
+                      if "aluno" in _sem_acento(c) or "nome" in _sem_acento(c)), None)
+    cols_data = [c for c in df.columns if "data" in _sem_acento(c)]
+    if not col_aluno or not cols_data:
+        return None
+    agrup = {}
+    for _, row in df.iterrows():
+        al = str(row.get(col_aluno, "") or "").strip()
+        if not al:
+            continue
+        datas = []
+        for c in cols_data:
+            v = str(row.get(c, "") or "").strip()
+            if v and v.lower() != "nan":
+                datas += _extrair_datas(v)
+        agrup.setdefault(al, [])
+        for d in datas:
+            if d not in agrup[al]:
+                agrup[al].append(d)
+    return [{"aluno": k, "datas": v} for k, v in agrup.items() if v]
+
 # ── Mostrar resultado ────────────────────────────────────────────────────────
 def mostrar_resultado(resposta_raw, esp, grupo, turma):
     dados = extrair_json(resposta_raw)
@@ -2332,5 +2576,93 @@ if "escala_gerada" in st.session_state and "esp_atual" in st.session_state:
         st.session_state.get("grupo_atual",""),
         st.session_state.get("turma_atual","")
     )
+
+    # ── Avaliar escalação de acordo com pedidos extraordinários ──────────────
+    st.divider()
+    st.header("🗓️ Avaliar pedidos extraordinários")
+    det_pe = dados_atual.get("escala_detalhada") or []
+    if not det_pe:
+        st.info("Monte a escala detalhada acima para poder avaliar os pedidos extraordinários.")
+    else:
+        st.caption("Informe os alunos que **não podem** ser escalados em dias específicos. "
+                   "O sistema mostra se eles realmente estão escalados nesses dias e, se quiser, "
+                   "tenta as trocas — repondo o serviço perdido e respeitando o mínimo de alunos por local.")
+
+        up = st.file_uploader("Carregar pedidos (CSV/XLSX) — precisa de uma coluna **Aluno** e ao menos uma de **Data**",
+                              type=["csv", "xlsx"], key="pe_upload")
+        if up is not None:
+            peds = _pedidos_de_arquivo(up)
+            if peds:
+                st.session_state.pe_pedidos = peds
+                st.success(f"{len(peds)} aluno(s) carregado(s) do arquivo.")
+            else:
+                st.error("Não reconheci as colunas. Preciso de uma coluna de **Aluno** e ao menos uma de **Data**.")
+
+        base = st.session_state.get("pe_pedidos")
+        if base:
+            df_ini = pd.DataFrame([{"Aluno": p["aluno"], "Datas": "; ".join(p["datas"])} for p in base])
+        else:
+            df_ini = pd.DataFrame([{"Aluno": "", "Datas": ""} for _ in range(5)])
+        st.markdown("**Ou edite manualmente** — datas separadas por `;` (ex.: `14/08; 15/08`):")
+        # chave varia com o conteúdo carregado para o editor recarregar após um novo upload
+        sig = "|".join(f'{p["aluno"]}:{",".join(p["datas"])}' for p in (base or []))
+        df_edit = st.data_editor(df_ini, num_rows="dynamic", use_container_width=True,
+                                 key=f"pe_editor_{abs(hash(sig))}")
+
+        c1, c2 = st.columns(2)
+        if c1.button("🔍 Avaliar escalação", type="primary", key="pe_avaliar"):
+            pedidos = _parse_pedidos_editor(df_edit)
+            if not pedidos:
+                st.warning("Informe ao menos um aluno com data(s).")
+            else:
+                st.session_state.pe_pedidos = pedidos
+                st.session_state.pe_avaliacao = avaliar_pedidos_extraordinarios(dados_atual, cfg_atual, pedidos)
+                st.session_state.pop("pe_relatorio", None)
+
+        avaliacao = st.session_state.get("pe_avaliacao")
+        if avaliacao:
+            def _situacao(r):
+                if not r["no_periodo"]:
+                    return "— fora do período da escala"
+                if r["aluno_escala"] == "(não encontrado)":
+                    return "aluno não está nesta escala"
+                return "🔴 ESCALADO" if r["escalado"] else "🟢 livre"
+            tabela = [{
+                "Aluno": r["aluno_escala"], "Data": r["data"], "Situação": _situacao(r),
+                "Onde está escalado": "; ".join(f'{e["local"]} / {e["turno"]} {e["horario"]}' for e in r["entradas"]),
+            } for r in avaliacao]
+            st.dataframe(pd.DataFrame(tabela), use_container_width=True, hide_index=True)
+
+            n_conf = sum(len(r["entradas"]) for r in avaliacao if r["escalado"])
+            if n_conf:
+                st.warning(f"⚠️ {n_conf} conflito(s): aluno escalado num dia em que pediu dispensa.")
+                if c2.button("🤖 Tentar trocas automaticamente", key="pe_trocar"):
+                    with st.spinner("Aplicando dispensas, substitutos e reposições..."):
+                        novo, relat = aplicar_trocas_pedidos(dados_atual, cfg_atual, avaliacao)
+                    st.session_state.escala_gerada = json.dumps(novo, ensure_ascii=False)
+                    st.session_state.pe_relatorio = relat
+                    st.session_state.pe_avaliacao = avaliar_pedidos_extraordinarios(
+                        novo, cfg_atual, st.session_state.get("pe_pedidos", []))
+                    st.rerun()
+            else:
+                st.success("✅ Nenhum dos alunos avaliados está escalado nos dias pedidos.")
+
+        relat = st.session_state.get("pe_relatorio")
+        if relat:
+            st.markdown("#### 🔄 Trocas aplicadas")
+            st.dataframe(pd.DataFrame([{
+                "Aluno": r["aluno"], "Dia dispensado": f'{r["data"]} ({r["dia"]})', "Serviço": r["servico"],
+                "Substituto": r["substituto"], "Reposição": r["reposicao"],
+                "Cobertura": r["cobertura"], "Status": r["status"],
+            } for r in relat]), use_container_width=True, hide_index=True)
+            try:
+                val_pe = validar_escala(json.loads(st.session_state.escala_gerada), cfg_atual)
+                if val_pe.get("ok"):
+                    st.success("✅ Escala revalidada após as trocas: sem violações de cobertura/CH.")
+                else:
+                    st.warning("⚠️ Após as trocas restam pontos a revisar — confira a Validação no topo do Resultado.")
+            except Exception:
+                pass
+            st.caption("As trocas já estão aplicadas na escala atual — reexporte na seção 📥 Exportar acima.")
 
 # ════════════════════════════════════════════════════════════════════════════
