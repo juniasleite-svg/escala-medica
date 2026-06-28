@@ -1214,6 +1214,14 @@ def gerar_detalhada_python(calendario, config):
                 for sa in alvos:
                     for sl in _slots_servico(sa, datas):
                         slots_alvo.append((sa,) + tuple(sl))
+                # Restringe aos períodos escolhidos para o complemento (DU/FDS × manhã/tarde/cinderela).
+                _per_ok = b2["loc"].get("complemento_periodos")
+                if _per_ok:
+                    _per_ok = set(_per_ok)
+                    def _cat_slot(sl):
+                        _pre = "fds" if sl[2] in ("Sáb", "Sab", "Dom") else "du"
+                        return f"{_pre}_{sl[4]}"
+                    slots_alvo = [sl for sl in slots_alvo if _cat_slot(sl) in _per_ok]
                 for al in sorted(alunos_b2, key=lambda x: ha.get(x, 0)):
                     # turnos já ocupados por dia (p/ ESPALHAR os plantões e evitar dia sobrecarregado)
                     day_load = {}
@@ -2318,6 +2326,7 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                      "respeitando o máximo de alunos por turno/dia do serviço de destino.")
             comp_modo_bloco = "auto"
             comp_servico_bloco = ""
+            comp_periodos = None
             if comp_ativo:
                 # serviços de OUTROS blocos já configurados (acima deste)
                 servicos_outros = []
@@ -2343,6 +2352,27 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                             "Serviço do plantão (digite o nome exato, ex: PA mandic)",
                             value=pl.get("complemento_servico",""), key=f"comp_serv_txt_{i}")
                         st.caption("💡 Configure o bloco do PA ANTES deste para escolher na lista.")
+                # Em quais períodos o plantão de complemento pode entrar
+                st.markdown("**Em quais períodos o plantão de complemento pode entrar?**")
+                st.caption("Marque um, vários ou todos. A IA escolhe o melhor dia dentro do que você marcar "
+                           "(considerando quantos alunos já estão naquele dia/turno).")
+                _per_atual = pl.get("complemento_periodos")
+                if _per_atual is None:
+                    _per_atual = ["du_manha", "du_tarde", "du_cind", "fds_manha", "fds_tarde", "fds_cind"]
+                comp_periodos = []
+                _cda, _cdb = st.columns(2)
+                with _cda:
+                    st.markdown("📅 **Dia útil**")
+                    for _k, _lbl in [("du_manha", "Manhã"), ("du_tarde", "Tarde"), ("du_cind", "Cinderela")]:
+                        if st.checkbox(_lbl, value=(_k in _per_atual), key=f"comp_per_{i}_{_k}"):
+                            comp_periodos.append(_k)
+                with _cdb:
+                    st.markdown("🏖️ **Fim de semana**")
+                    for _k, _lbl in [("fds_manha", "Manhã"), ("fds_tarde", "Tarde"), ("fds_cind", "Cinderela")]:
+                        if st.checkbox(_lbl, value=(_k in _per_atual), key=f"comp_per_{i}_{_k}"):
+                            comp_periodos.append(_k)
+                if not comp_periodos:
+                    st.warning("Selecione ao menos um período (senão o complemento usará todos por padrão).")
                 st.caption("⚠️ O sistema **respeita o máximo de alunos por turno/dia** do serviço de destino "
                            "e **avisa** (na validação) se não houver vaga suficiente para todos atingirem a CH.")
 
@@ -2358,6 +2388,7 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
             srv_principal["complemento_ativo"] = bool(comp_ativo)
             srv_principal["complemento_modo"] = comp_modo_bloco
             srv_principal["complemento_servico"] = comp_servico_bloco
+            srv_principal["complemento_periodos"] = comp_periodos
             for srv_e in srv_extras:
                 srv_e["duracao_por_sg"] = duracao_sgs_bloco
                 srv_e["sem_por_sg"] = int(sem_por_sg)
@@ -2485,10 +2516,18 @@ if locais and _total_alunos:
                                   int(limite_min), int(limite_ch), regra_quinta)
         st.caption(f"Estimativa com ~{prev[0]['alunos_bloco'] if prev else 0} alunos por bloco "
                    f"(≈ {_total_alunos} alunos ÷ {int(num_locais)} blocos). Alvo: {int(limite_min)}–{int(limite_ch)}h/aluno.")
-        for p in prev:
+        for idx, p in enumerate(prev):
+            tem_comp = bool(locais[idx].get("complemento_ativo")) if idx < len(locais) else False
             if p["ch_max"] < int(limite_min):
-                st.error(f"❌ **{p['bloco']}**: no máximo ~**{p['ch_max']}h/aluno** (< alvo {int(limite_min)}h). "
-                         f"Falta capacidade → ative a cinderela, aumente o **Máx/dia** dos turnos, ou coloque menos alunos no bloco.")
+                if tem_comp:
+                    st.info(f"ℹ️ **{p['bloco']}**: sozinho o bloco fecha ~**{p['ch_max']}h/aluno** (alvo {int(limite_min)}h), "
+                            f"mas você ativou **plantões de complemento em outro serviço** → a diferença é coberta com "
+                            f"as **vagas livres (inclusive de dia útil)** do serviço de destino. Confira na escala gerada.")
+                else:
+                    st.warning(f"⚠️ **{p['bloco']}**: sozinho o bloco fecha ~**{p['ch_max']}h/aluno** (< alvo {int(limite_min)}h). "
+                               f"Para fechar a CH, o ideal é ativar o **complemento (plantões em outro serviço)** — ele aproveita o "
+                               f"**período livre de dia útil** de outro serviço (não precisa ser cinderela/FDS). "
+                               f"Alternativas: aumentar o **Máx/dia**, ativar a cinderela, ou colocar menos alunos no bloco.")
             elif p["ch_min"] > int(limite_ch):
                 st.error(f"❌ **{p['bloco']}**: a cobertura mínima já força ~**{p['ch_min']}h/aluno** (> {int(limite_ch)}h). "
                          f"Reduza o **Mín/dia** dos turnos.")
