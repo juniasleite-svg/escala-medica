@@ -973,6 +973,7 @@ def gerar_detalhada_python(calendario, config):
             # Plantão EXCLUSIVO: serviço cujo turno só pode ser feito por quem, na mesma semana,
             # está escalado em OUTRO serviço (de origem) do mesmo bloco. Mapeia si -> si_origem.
             _excl_por_si = {}
+            _excl_turnos_por_si = {}   # si -> set de categorias (du_/fds_ × manha/tarde/cind); vazio = todas
             for _si, _s in enumerate(servs_bloco):
                 _alvo = _norm(str(_s.get("exclusivo_de_servico", "") or ""))
                 if not _alvo:
@@ -983,6 +984,7 @@ def gerar_detalhada_python(calendario, config):
                     _rot = {_norm(_s2.get("nome")), _norm(_s2.get("abrev"))} - {""}
                     if _alvo in _rot or any(r and (_alvo in r or r in _alvo) for r in _rot):
                         _excl_por_si[_si] = _sj
+                        _excl_turnos_por_si[_si] = set(_s.get("exclusivo_turnos") or [])
                         break
 
             # Plano de continuidade POR SERVIÇO: a continuidade prende os MESMOS alunos
@@ -1029,10 +1031,14 @@ def gerar_detalhada_python(calendario, config):
                 if horas_aluno[n] + hrs > cap:
                     return False
                 # plantão exclusivo: n precisa já estar no serviço de origem nesta semana
+                # (só para os turnos marcados; vazio = todos os turnos do serviço)
                 _alvo_si = _excl_por_si.get(slot_svc[idx])
                 if _alvo_si is not None:
-                    if not any(slot_svc[_j] == _alvo_si and n in assigned[_j] for _j in range(len(slots))):
-                        return False
+                    _et = _excl_turnos_por_si.get(slot_svc[idx]) or set()
+                    _cat = ("fds" if dia3 in ("Sáb", "Sab", "Dom") else "du") + "_" + tk
+                    if (not _et) or (_cat in _et):
+                        if not any(slot_svc[_j] == _alvo_si and n in assigned[_j] for _j in range(len(slots))):
+                            return False
                 if respeitar_cont and usa_continuidade and dia3 in dias3[:5]:  # só dias úteis
                     # a trava vale SÓ para os turnos do serviço de continuidade:
                     # ali só entram os alunos "presos" da janela; os demais serviços ficam livres
@@ -2291,16 +2297,36 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                      "Útil p/ plantões que devem ser cobertos por quem já está na enfermaria. "
                      "Modo rígido: se não houver alunos elegíveis, o turno pode ficar sem cobertura.")
             exclusivo_de_servico = ""
+            exclusivo_turnos = []
             if _excl_on:
                 exclusivo_de_servico = st.text_input(
                     "Serviço de origem (nome ou abreviação — ex.: Enfermaria)",
                     value=_excl_atual, key=f"{key_prefix}_exclserv",
                     help="Nome do serviço onde o aluno precisa estar naquela semana para poder pegar "
                          "este plantão. Deve ser um serviço do MESMO bloco.")
+                st.caption("A quais turnos/plantões deste serviço a exclusividade se aplica? "
+                           "(marque um, vários ou todos)")
+                _exc_atual = pl_srv.get("exclusivo_turnos")
+                if _exc_atual is None:   # padrão: todos (mantém compatibilidade)
+                    _exc_atual = ["du_manha", "du_tarde", "du_cind", "fds_manha", "fds_tarde", "fds_cind"]
+                _exa, _exb = st.columns(2)
+                with _exa:
+                    st.markdown("📅 **Dia útil**")
+                    for _k, _lbl in [("du_manha", "Manhã"), ("du_tarde", "Tarde"), ("du_cind", "Cinderela")]:
+                        if st.checkbox(_lbl, value=(_k in _exc_atual), key=f"{key_prefix}_exct_{_k}"):
+                            exclusivo_turnos.append(_k)
+                with _exb:
+                    st.markdown("🏖️ **Fim de semana (FDS)**")
+                    for _k, _lbl in [("fds_manha", "Manhã"), ("fds_tarde", "Tarde"), ("fds_cind", "Cinderela")]:
+                        if st.checkbox(_lbl, value=(_k in _exc_atual), key=f"{key_prefix}_exct_{_k}"):
+                            exclusivo_turnos.append(_k)
+                if not exclusivo_turnos:
+                    st.warning("Selecione ao menos um turno — senão a exclusividade vale para TODOS os turnos deste serviço.")
 
             return {
                 "priorizar_periodo": priorizar_periodo,
                 "exclusivo_de_servico": exclusivo_de_servico,
+                "exclusivo_turnos": exclusivo_turnos,
                 "nome": nome, "abrev": abrev, "obs": obs, "quem": quem,
                 "n_sgs": int(n_sgs_srv),
                 "duracao_por_sg": duracao_sgs,
