@@ -332,21 +332,31 @@ def _servicos_config(config):
             nomes = {_norm(s.get("nome")), _norm(s.get("abrev"))} - {""}
             if not nomes:
                 continue
-            turnos = {}
+            def _faixa(mn, mx):
+                try: mn = int(mn or 0)
+                except (TypeError, ValueError): mn = 0
+                try: mx = int(mx) if mx not in (None, "", 0) else None
+                except (TypeError, ValueError): mx = None
+                return (mn, mx)
+            turnos = {}      # dias úteis
             for tk, (mn, mx, ativo) in {
                 "manha": (s.get("min_manha"), s.get("max_manha"), s.get("manha")),
                 "tarde": (s.get("min_tarde"), s.get("max_tarde"), s.get("tarde")),
                 "cind":  (s.get("min_cind"),  s.get("max_cind"),  s.get("cinderela")),
             }.items():
-                if not ativo:
-                    continue
-                try: mn = int(mn or 0)
-                except (TypeError, ValueError): mn = 0
-                try: mx = int(mx) if mx not in (None, "", 0) else None
-                except (TypeError, ValueError): mx = None
-                turnos[tk] = (mn, mx)
+                if ativo:
+                    turnos[tk] = _faixa(mn, mx)
+            turnos_fds = {}  # fim de semana (mín/máx próprios)
+            for tk, (mn, mx, ativo) in {
+                "manha": (s.get("fds_min_manha"), s.get("fds_max_manha"), s.get("fds_manha")),
+                "tarde": (s.get("fds_min_tarde"), s.get("fds_max_tarde"), s.get("fds_tarde")),
+                "cind":  (s.get("fds_min_cind"),  s.get("fds_max_cind"),  s.get("fds_cind")),
+            }.items():
+                if ativo:
+                    turnos_fds[tk] = _faixa(mn, mx)
             servs.append({"nomes": nomes, "bloco": bloco,
-                          "label": s.get("nome") or s.get("abrev") or "", "turnos": turnos})
+                          "label": s.get("nome") or s.get("abrev") or "",
+                          "turnos": turnos, "turnos_fds": turnos_fds})
     return servs
 
 def validar_escala(dados, config):
@@ -415,10 +425,12 @@ def validar_escala(dados, config):
     servs_cfg = _servicos_config(config)
     desvios = []
     for (local, turno, sem, dia), n in qtd.items():
-        srv = next((s for s in servs_cfg if turno in s["turnos"] and _nome_bate(s["nomes"], _norm(local))), None)
+        eh_fds = dia in ("Sáb", "Sab", "Dom")
+        chave = "turnos_fds" if eh_fds else "turnos"
+        srv = next((s for s in servs_cfg if turno in s.get(chave, {}) and _nome_bate(s["nomes"], _norm(local))), None)
         if not srv:
             continue
-        mn, mx = srv["turnos"][turno]
+        mn, mx = srv[chave][turno]
         if n < mn:
             desvios.append({"local": local, "turno": turno, "semana": sem, "dia": dia, "qtd": n, "min": mn, "max": mx, "tipo": "abaixo"})
         elif mx is not None and n > mx:
@@ -668,6 +680,42 @@ def _dur_horario(horario, turno_key=""):
         if b > a:
             return float(b - a)
     return {"manha": 6.0, "tarde": 6.0, "cind": 4.0}.get(turno_key, 6.0)
+
+def previa_viabilidade(locais, total_alunos, num_blocos, alvo_min, limite, regra_quinta=""):
+    """ANTES de gerar: estima a CH/aluno alcançável por bloco (mín forçado e máx)."""
+    rq = str(regra_quinta or "").lower()
+    nb = max(int(num_blocos), 1)
+    alunos_bloco = max(round(total_alunos / nb), 1)  # ~alunos simultâneos por bloco
+    out = []
+    for loc in locais:
+        nome_bl = loc.get("nome_bloco") or loc.get("nome") or "Bloco"
+        cap_min = cap_max = 0.0
+        for s in [loc] + (loc.get("servicos_extras") or []):
+            def add(tk, hor, mn, mx, dias):
+                nonlocal cap_min, cap_max
+                if not hor:
+                    return
+                h = _dur_horario(hor, tk)
+                qmin = max(int(mn or 0), 1)
+                try:
+                    qmax = int(mx) if str(mx) not in ("None", "", "0") else alunos_bloco
+                except (TypeError, ValueError):
+                    qmax = alunos_bloco
+                cap_min += dias * qmin * h
+                cap_max += dias * max(qmax, qmin) * h
+            d_tarde = 5 - (1 if "sem tarde" in rq else 0)
+            add("manha", s.get("manha"), s.get("min_manha"), s.get("max_manha"), 5)
+            add("tarde", s.get("tarde"), s.get("min_tarde"), s.get("max_tarde"), d_tarde)
+            if s.get("cinderela"):
+                add("cind", s.get("cinderela"), s.get("min_cind"), s.get("max_cind"),
+                    len(s.get("dias_cind") or []) or 5)
+            add("manha", s.get("fds_manha"), s.get("fds_min_manha"), s.get("fds_max_manha"), 2)
+            add("tarde", s.get("fds_tarde"), s.get("fds_min_tarde"), s.get("fds_max_tarde"), 2)
+            add("cind", s.get("fds_cind"), s.get("fds_min_cind"), s.get("fds_max_cind"), 2)
+        out.append({"bloco": nome_bl, "alunos_bloco": alunos_bloco,
+                    "ch_min": round(cap_min / alunos_bloco, 1),
+                    "ch_max": round(cap_max / alunos_bloco, 1)})
+    return out
 
 def gerar_detalhada_python(calendario, config):
     """Monta a escala_detalhada dia a dia a partir do calendário + regras dos serviços.
@@ -1587,8 +1635,27 @@ with st.expander("📊 Bloco 6 — Formato do Excel", expanded=False):
         ["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas","Escala por Local","Regras e Restrições"],
         default=["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas"])
 
-# ── GERAR ────────────────────────────────────────────────────────────────────
+# ── PRÉVIA DE VIABILIDADE (antes de gerar) ───────────────────────────────────
 st.divider()
+_total_alunos = sum(len(v) for v in alunos_por_sg.values()) if alunos_por_sg else 0
+if locais and _total_alunos:
+    with st.expander("🔎 Prévia de viabilidade (CH por bloco, antes de gerar)", expanded=True):
+        prev = previa_viabilidade(locais, _total_alunos, int(num_locais),
+                                  int(limite_min), int(limite_ch), regra_quinta)
+        st.caption(f"Estimativa com ~{prev[0]['alunos_bloco'] if prev else 0} alunos por bloco "
+                   f"(≈ {_total_alunos} alunos ÷ {int(num_locais)} blocos). Alvo: {int(limite_min)}–{int(limite_ch)}h/aluno.")
+        for p in prev:
+            if p["ch_max"] < int(limite_min):
+                st.error(f"❌ **{p['bloco']}**: no máximo ~**{p['ch_max']}h/aluno** (< alvo {int(limite_min)}h). "
+                         f"Falta capacidade → ative a cinderela, aumente o **Máx/dia** dos turnos, ou coloque menos alunos no bloco.")
+            elif p["ch_min"] > int(limite_ch):
+                st.error(f"❌ **{p['bloco']}**: a cobertura mínima já força ~**{p['ch_min']}h/aluno** (> {int(limite_ch)}h). "
+                         f"Reduza o **Mín/dia** dos turnos.")
+            else:
+                st.success(f"✅ **{p['bloco']}**: dá pra atingir o alvo "
+                           f"(~{int(limite_min)}–{int(min(p['ch_max'], limite_ch))}h/aluno).")
+
+# ── GERAR ────────────────────────────────────────────────────────────────────
 if st.button("🚀 Gerar Escala com IA", type="primary", use_container_width=True):
     # Subgrupos esperados que estão sem alunos
     sgs_vazios = [str(i) for i in range(1, int(num_sg) + 1)
