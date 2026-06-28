@@ -1900,9 +1900,33 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
                         # Limpa o cache das caixas de alunos (evita mostrar valores antigos/vazios)
                         for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("sg_imp_")]:
                             del st.session_state[_k]
-                        # Se tiver base de alunos, tentar carregar também
+                        # Se tiver base de alunos, usar os nomes OFICIAIS do grupo da escala
+                        # (a escala importada pode conter os alunos do grupo errado).
                         if arquivo_alunos_imp:
                             st.session_state.prefill["_arquivo_alunos"] = True
+                            try:
+                                _b = arquivo_alunos_imp.read()
+                                _xls_b = pd.ExcelFile(io.BytesIO(_b), engine="openpyxl")
+                                _sheets_g = [s for s in _xls_b.sheet_names if "GRUPO" in s.upper()]
+                                _gp = str(dados.get("grupo", "")).upper().replace("GRUPO", "").strip()
+                                _sh = next((s for s in _sheets_g
+                                            if s.upper().replace("GRUPO", "").strip() == _gp), None)
+                                if _sh:
+                                    _dfg = pd.read_excel(io.BytesIO(_b), engine="openpyxl", sheet_name=_sh)
+                                    if "OPÇÃO" in _dfg.columns:
+                                        _ns = int(dados.get("num_sg", 6) or 6)
+                                        _ops = list(_dfg["OPÇÃO"].dropna().unique())
+                                        _op = next((o for o in _ops if f"{_ns} SG" in str(o)), _ops[0] if _ops else None)
+                                        if _op is not None:
+                                            _dff = _dfg[_dfg["OPÇÃO"] == _op]
+                                            _novos, _ra = _ler_subgrupos(_dff)
+                                            if _novos:
+                                                st.session_state.prefill["alunos_por_sg"] = _novos
+                                                st.session_state.prefill["num_sg"] = len(_novos)
+                                                st.session_state["ra_por_aluno"] = _ra
+                                                st.session_state.prefill["_alunos_base_grupo"] = _sh
+                            except Exception:
+                                pass   # mantém os alunos extraídos da escala se a base falhar
                         st.success("✅ Escala analisada! Role para baixo para ver o formulário pré-preenchido.")
                         st.rerun()
                     else:
@@ -1954,6 +1978,9 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
 
     # Se importado, mostrar os alunos pré-preenchidos editáveis
     if pf.get("alunos_por_sg"):
+        if pf.get("_alunos_base_grupo"):
+            st.success(f"✅ Alunos carregados da base oficial — **{pf['_alunos_base_grupo']}** "
+                       f"(grupo da escala importada).")
         st.caption("✏️ Alunos importados — edite se necessário:")
         for sg, nomes in sorted(pf["alunos_por_sg"].items(), key=lambda x: int(x[0])):
             k = f"sg_imp_{sg}"
