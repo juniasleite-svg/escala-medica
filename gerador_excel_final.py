@@ -307,11 +307,11 @@ def _aba_resumo_geral(wb, titulo, config, dados, semanas):
         ("M", "Manhã (horário conforme local)", None),
         ("T", "Tarde completa", None),
         ("R", "Tarde reduzida (fundo amarelo)", C["TARDE_R"]),
-        ("F", "Plantão FDS manhã Enf/PS", C["FDS"]),
-        ("★ / FDS", "Plantão PA/FDS — fundo lilás", C["FDS_PLT"]),
+        ("F", "Período FDS manhã Enf/PS", C["FDS"]),
+        ("★ / FDS", "Período PA/FDS — fundo lilás", C["FDS_PLT"]),
         ("AV", "Área Verde — tarde livre", C["VERDE"]),
         ("C", "Cinderela", None),
-        ("—", "Sem atividade (FDS sem plantão)", C["FDS_CELL"]),
+        ("—", "Sem atividade (FDS sem período)", C["FDS_CELL"]),
     ]
     for ab, desc, cor in turnos_leg:
         _cel(ws, row, 1, ab, bold=True, bg=cor or "FFFFFF", sz=9)
@@ -526,7 +526,7 @@ def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg, dad
         d = sem[0].strftime("%d/%m")
         sem_labels.append(f"S{i+1}\n{d}")
 
-    headers = ["SG","Nome","RA"] + sem_labels + ["TOTAL","Cind","Plantões\nEnf FDS","Plantões\nPS FDS"]
+    headers = ["SG","Nome","RA"] + sem_labels + ["TOTAL","Cind","Períodos\nEnf FDS","Períodos\nPS FDS"]
     for i, h in enumerate(headers, 1):
         bg = C["H1"] if h in ["SG","TOTAL"] else (C["ENF_FDS_H"] if "Enf" in h else (C["PS_FDS_H"] if "PS" in h else C["H2"]))
         fc = "FFFFFF" if bg in [C["H1"],C["H2"]] else "000000"
@@ -571,12 +571,22 @@ def _aba_resumo_horas(wb, titulo, resumo_horas, config, semanas, locais_cfg, dad
         except: horas_entry = 0
         turno = (entry.get("turno","") or "").lower()
         local = (entry.get("local","") or "").lower()
+        dia = (entry.get("dia","") or "").lower()
+        # fim de semana: pelo dia (sáb/dom) ou pela data; o gerador marca FDS pelo DIA, não no turno
+        eh_fds = dia.startswith("sáb") or dia.startswith("sab") or dia.startswith("dom") or "fds" in turno or "★" in turno
+        if not eh_fds:
+            try:
+                dd, mm = str(entry.get("data","")).split("/")[:2]
+                dt_fds = date(int(ano_escala), int(mm), int(dd))
+                eh_fds = dt_fds.weekday() >= 5
+            except Exception:
+                pass
         for nome in alunos:
             horas_calc[nome][int(sem_num)] += horas_entry
             horas_dia[nome][data_key] += horas_entry
             if "cinderela" in turno or turno == "c":
                 cind_calc[nome] += 1
-            if "fds" in turno or "★" in turno:
+            if eh_fds:
                 if "enf" in local: fds_enf_calc[nome] += 1
                 else: fds_ps_calc[nome] += 1
 
@@ -716,7 +726,7 @@ def _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, se
 
     _header(ws, 1, 1, f"ESCALA POR SUBGRUPO — {grupo} / {turma}  |  {d_ini}–{d_fim}  |  rodízio equilibrado",
             span=60, sz=11)
-    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Plantão FDS",
+    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Período FDS",
             span=60, bg=C["H2"], sz=9)
 
     # Montar todas as datas
@@ -816,7 +826,7 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
 
     _header(ws, 1, 1, f"ESCALA INDIVIDUAL — {grupo} / {turma}  |  {d_ini}–{d_fim}  |  rodízio equilibrado",
             span=60, sz=11)
-    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Plantão PS FDS",
+    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Período PS FDS",
             span=60, bg=C["H2"], sz=9)
 
     # Montar todas as datas

@@ -879,19 +879,39 @@ def gerar_detalhada_python(calendario, config):
                 slots.extend(novos)
                 slot_svc.extend([si] * len(novos))
 
-            # Plano de continuidade POR SUBGRUPO: o SG inteiro (as duplas) fica no mesmo serviço
-            # por blocos de N dias úteis, e o SG todo roda junto para o próximo serviço.
-            # A continuidade é configurada POR BLOCO (Bloco 3), não global.
+            # Plano de continuidade POR SERVIÇO: a continuidade prende os MESMOS alunos
+            # ao SERVIÇO escolhido (ex: Enfermaria) por N dias úteis seguidos; depois gira para
+            # que todos passem por ele. IMPORTANTE: o aluno preso à Enfermaria de manhã CONTINUA
+            # livre para ser escalado no PA à tarde / cinderela nos mesmos dias (a trava vale só
+            # para os turnos do PRÓPRIO serviço de continuidade, não bloqueia os outros serviços).
+            # Configurada POR BLOCO + SERVIÇO (Bloco 3), não global.
             dias_consec = int(b["loc"].get("dias_consec", 0) or 0)
-            plano = {}
+            cont_nome = _norm(str(b["loc"].get("consec_servico", "") or ""))
+            pinned = {}  # wd (0..4) -> set de alunos presos ao serviço de continuidade
             usa_continuidade = dias_consec > 0 and len(servs_bloco) > 1
+            cont_idx = 0
             if usa_continuidade:
-                k = len(servs_bloco)
-                sgs_lista = sorted(sgset, key=lambda x: int(x) if str(x).isdigit() else 99)
-                plano_sg = {}
-                for j, sg in enumerate(sgs_lista):
-                    plano_sg[sg] = {wd: (j + (wd // dias_consec)) % k for wd in range(5)}
-                plano = {n: plano_sg[sg_de[n]] for n in nomes}
+                # qual serviço do bloco recebe a continuidade (default = principal/serviço 1)
+                if cont_nome:
+                    for si, s in enumerate(servs_bloco):
+                        rotulos = {_norm(s.get("nome")), _norm(s.get("abrev"))} - {""}
+                        if cont_nome in rotulos or any(cont_nome in r or r in cont_nome for r in rotulos):
+                            cont_idx = si; break
+                # capacidade do serviço de continuidade (~quantos cabem por vez)
+                s_cont = servs_bloco[cont_idx]
+                cap_cont = (s_cont.get("max_manha") or s_cont.get("max_tarde")
+                            or s_cont.get("max_cind") or s_cont.get("min_manha") or 1)
+                try: cap_cont = int(cap_cont)
+                except (TypeError, ValueError): cap_cont = 1
+                cap_cont = max(1, min(cap_cont, len(nomes)))
+                # janelas de N dias: cada janela fixa um conjunto rotativo de alunos no serviço
+                chunks = list(range(0, 5, dias_consec))
+                for ci, cstart in enumerate(chunks):
+                    desloc = (ci * cap_cont) % max(len(nomes), 1)
+                    rot = nomes[desloc:] + nomes[:desloc]
+                    presos = set(rot[:cap_cont])
+                    for wd in range(cstart, min(cstart + dias_consec, 5)):
+                        pinned[wd] = presos
 
             horas_aluno = {n: 0.0 for n in nomes}
             ocupado = {}  # (dia3,turno_key) -> set
@@ -903,9 +923,12 @@ def gerar_detalhada_python(calendario, config):
                 if horas_aluno[n] + hrs > cap:
                     return False
                 if respeitar_cont and usa_continuidade and dia3 in dias3[:5]:  # só dias úteis
-                    wd = dias3.index(dia3)
-                    if plano.get(n, {}).get(wd) != slot_svc[idx]:
-                        return False
+                    # a trava vale SÓ para os turnos do serviço de continuidade:
+                    # ali só entram os alunos "presos" da janela; os demais serviços ficam livres
+                    if slot_svc[idx] == cont_idx:
+                        wd = dias3.index(dia3)
+                        if n not in pinned.get(wd, set()):
+                            return False
                 return True
 
             def _por(n, idx, hrs, dia3, tk):
@@ -1683,17 +1706,31 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
 
             # Continuidade NESTE bloco (só faz sentido com 2+ serviços)
             dias_consec_bloco = 0
+            consec_servico_bloco = ""
             if n_srv_bloco > 1:
-                cc1, cc2 = st.columns([3, 1])
+                # nomes dos serviços do bloco (principal + extras) para escolher onde aplicar a trava
+                nomes_srv_bloco = [srv_principal.get("nome") or "Serviço 1"]
+                nomes_srv_bloco += [(s.get("nome") or f"Serviço {j+2}") for j, s in enumerate(srv_extras)]
+                cc1, cc2, cc3 = st.columns([3, 1, 2])
                 with cc1:
                     manter_b = st.checkbox(
-                        "🔗 Manter o subgrupo no mesmo serviço por vários dias seguidos (neste bloco)",
+                        "🔗 Manter o MESMO aluno no mesmo serviço por vários dias seguidos",
                         value=bool(pl.get("dias_consec", 0)), key=f"consec_chk_{i}",
-                        help="Ex: o SG fica 3 dias na Enfermaria, depois roda para o PA — em vez de pular de serviço todo dia.")
+                        help="Ex: o aluno fica 3 dias seguidos na Enfermaria (de manhã) e só depois roda. "
+                             "Ele continua livre para o PA à tarde / cinderela nesses mesmos dias — a trava vale só para o serviço escolhido.")
                 with cc2:
                     if manter_b:
                         dias_consec_bloco = int(st.number_input("Dias seguidos", 2, 5,
                             int(pl.get("dias_consec", 3) or 3), key=f"consec_n_{i}"))
+                with cc3:
+                    if manter_b:
+                        idx_def = 0
+                        prev_srv = pl.get("consec_servico", "")
+                        if prev_srv in nomes_srv_bloco:
+                            idx_def = nomes_srv_bloco.index(prev_srv)
+                        consec_servico_bloco = st.selectbox(
+                            "Em qual serviço?", nomes_srv_bloco, index=idx_def, key=f"consec_srv_{i}",
+                            help="Serviço onde os mesmos alunos ficam fixos pelos dias seguidos (ex: Enfermaria).")
 
             # Gerar duracao_sgs automaticamente
             duracao_sgs_bloco = {str(sg+1): int(sem_por_sg) for sg in range(n_sgs_total)}
@@ -1703,6 +1740,7 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
             srv_principal["sem_por_sg"] = int(sem_por_sg)
             srv_principal["sgs_por_servico"] = sgs_por_srv
             srv_principal["dias_consec"] = dias_consec_bloco
+            srv_principal["consec_servico"] = consec_servico_bloco
             for srv_e in srv_extras:
                 srv_e["duracao_por_sg"] = duracao_sgs_bloco
                 srv_e["sem_por_sg"] = int(sem_por_sg)
