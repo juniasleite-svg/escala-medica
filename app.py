@@ -1744,6 +1744,20 @@ período também podem ser 1 bloco com 3 serviços. NÃO crie um bloco separado 
   serviço principal no próprio item, e "servicos_extras" para o 2º/3º serviço do mesmo bloco.
 - "num_locais" = número de BLOCOS (etapas do rodízio), NÃO de serviços. Cada item de "locais" é 1 bloco.
 - Se um bloco tem só 1 serviço, deixe "servicos_extras": [].
+- REGRA OBRIGATÓRIA: se o nome de uma etapa juntar 2+ serviços com "e", "+", "/", "&" ou "com"
+  (ex.: "Enfermaria Cirúrgica e Centro Cirúrgico"), crie CADA serviço SEPARADAMENTE no mesmo bloco —
+  o 1º em "nome", os demais em "servicos_extras" — e ponha o nome composto em "nome_bloco". NUNCA
+  deixe um nome composto inteiro dentro de um único campo "nome".
+  Exemplo: bloco "Enfermaria Cirúrgica e Centro Cirúrgico" → nome_bloco="Enfermaria Cirúrgica e
+  Centro Cirúrgico", nome="Enfermaria Cirúrgica", servicos_extras=[{{"nome":"Centro Cirúrgico", ...}}].
+- AGRUPE por especialidade: várias etapas da MESMA especialidade em hospitais/locais diferentes que
+  formam um único momento do rodízio devem virar UM bloco com vários serviços (o aluno roda
+  internamente entre eles, e a duração do bloco = soma das semanas desses serviços). Exemplos reais
+  de Cirurgia: bloco "Anestesiologia" = Anest. Santa Casa Leme + Anest. SCA + Anest. Mandic (3
+  serviços); bloco "Ambulatório" = Amb. de Cirurgia + Amb. de Oftalmologia (2 serviços).
+  ATENÇÃO: nem toda etapa de nome parecido se junta — Enfermarias em hospitais diferentes podem ser
+  blocos separados se forem momentos distintos do rodízio. Na dúvida, agrupe só quando claramente é o
+  mesmo bloco; o usuário ajusta o resto.
 
 Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
 {{
