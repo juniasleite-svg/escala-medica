@@ -1279,6 +1279,16 @@ def gerar_detalhada_python(calendario, config):
                         _pre = "fds" if sl[2] in ("Sáb", "Sab", "Dom") else "du"
                         return f"{_pre}_{sl[4]}"
                     slots_alvo = [sl for sl in slots_alvo if _cat_slot(sl) in _per_ok]
+                obrig = bool(b2["loc"].get("complemento_obrigatorio"))
+                compensa = bool(b2["loc"].get("complemento_compensa"))
+
+                def _min_blk_turno(local, tkk):
+                    ln = _norm(local)
+                    for s in b2["servs"]:
+                        if any(r and (r in ln or ln in r) for r in _rotulos(s)):
+                            return int(s.get(f"min_{tkk}", 0) or 0)
+                    return 0
+
                 comp_load = {}   # (dia3, tk) -> nº de plantões já colocados (p/ ESPALHAR entre dias/turnos)
                 for al in sorted(alunos_b2, key=lambda x: ha.get(x, 0)):
                     # turnos já ocupados por dia (p/ ESPALHAR os plantões e evitar dia sobrecarregado)
@@ -1286,17 +1296,22 @@ def gerar_detalhada_python(calendario, config):
                     for (d3, _tk2), s_al in occ.items():
                         if al in s_al:
                             day_load[d3] = day_load.get(d3, 0) + 1
+                    feitos = 0   # plantões de complemento dados a ESTE aluno nesta semana
                     # espalha: prioriza (1) o dia/turno MENOS usado pelos plantões e (2) o dia mais leve do aluno
                     ordenados = sorted(slots_alvo,
                                        key=lambda sl: (comp_load.get((sl[2], sl[4]), 0), day_load.get(sl[2], 0)))
                     for (sa, data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in ordenados:
-                        if ha.get(al, 0) >= alvo_min:
+                        # obrigatório: garante 1 plantão por aluno mesmo já tendo batido a CH;
+                        # depois desse 1, volta a parar ao atingir a CH alvo.
+                        if (not obrig or feitos >= 1) and ha.get(al, 0) >= alvo_min:
                             break
                         if al in occ.get((dia3, tk), set()):
                             continue
                         if day_load.get(dia3, 0) >= 2:   # no máx 2 turnos/dia (evita dia de 14h+)
                             continue
-                        if ha.get(al, 0) + hrs > limite:
+                        # no plantão obrigatório, permite chegar até o limite ABSOLUTO de CH
+                        _cap_ch = limite_abs if (obrig and feitos < 1) else limite
+                        if ha.get(al, 0) + hrs > _cap_ch:
                             continue
                         teto = qmax if qmax is not None else 99
                         if _occ_serv(sa, dia3, tk) >= teto:   # RESPEITA o máximo de alunos/turno
@@ -1305,11 +1320,46 @@ def gerar_detalhada_python(calendario, config):
                         day_load[dia3] = day_load.get(dia3, 0) + 1
                         comp_load[(dia3, tk)] = comp_load.get((dia3, tk), 0) + 1
                         ha[al] = ha.get(al, 0) + hrs
+                        feitos += 1
                         ent = {"semana": w, "data": data.strftime("%d/%m"), "dia": dia3,
                                "local": locn, "turno": tn, "horario": hor, "horas": hrs,
                                "sg": sg_de_aluno.get(al, ""), "alunos": [al], "plantao": True}
                         detalhada.append(ent)
                         ent_sem.append(ent)
+
+                    # Compensação: quem fez o plantão obrigatório tem 1 período de DIA ÚTIL retirado
+                    # (preferindo a tarde), desde que o serviço siga com o mínimo e o aluno com a CH mínima.
+                    if obrig and compensa and feitos >= 1:
+                        cands = []
+                        for e in ent_sem:
+                            if e.get("plantao") or e.get("dia") in ("Sáb", "Sab", "Dom"):
+                                continue
+                            if al not in e.get("alunos", []):
+                                continue
+                            ln = _norm(e.get("local"))
+                            if not any(r and (r in ln or ln in r) for r in rot_b2):
+                                continue
+                            tkk = _turno_key(e.get("turno"))
+                            mn = _min_blk_turno(e.get("local"), tkk)
+                            if len(e.get("alunos", [])) - 1 < mn:        # mantém o mínimo do serviço
+                                continue
+                            hh = _horas_entrada(e)
+                            if ha.get(al, 0) - hh < alvo_min:            # não derruba abaixo da CH mínima
+                                continue
+                            prio = 0 if tkk == "tarde" else (1 if tkk == "manha" else 2)
+                            cands.append((prio, -(len(e["alunos"]) - mn), hh, e, tkk))
+                        if cands:
+                            cands.sort(key=lambda x: (x[0], x[1]))
+                            _, _, hh, e, tkk = cands[0]
+                            e["alunos"].remove(al)
+                            ha[al] = ha.get(al, 0) - hh
+                            occ.get((e.get("dia"), tkk), set()).discard(al)
+                            if not e["alunos"]:   # não deixa linha fantasma sem alunos
+                                for _lst in (detalhada, ent_sem):
+                                    try:
+                                        _lst.remove(e)
+                                    except ValueError:
+                                        pass
     detalhada.sort(key=lambda e: (e["semana"], e["data"], e["local"], e["turno"]))
     return detalhada
 
@@ -2152,7 +2202,7 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
 
     st.markdown("---")
 
-    def _servico_form(key_prefix, pl_srv, label, expanded=True):
+    def _servico_form(key_prefix, pl_srv, label, expanded=True, outros_servicos=None):
         """Renderiza formulário de um serviço dentro de um bloco."""
         with st.expander(f"⚙️ {label}", expanded=expanded):
             ca, cb, cc = st.columns(3)
@@ -2299,11 +2349,25 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
             exclusivo_de_servico = ""
             exclusivo_turnos = []
             if _excl_on:
-                exclusivo_de_servico = st.text_input(
-                    "Serviço de origem (nome ou abreviação — ex.: Enfermaria)",
-                    value=_excl_atual, key=f"{key_prefix}_exclserv",
-                    help="Nome do serviço onde o aluno precisa estar naquela semana para poder pegar "
-                         "este plantão. Deve ser um serviço do MESMO bloco.")
+                _opts = [o for o in (outros_servicos or []) if o]
+                if _opts:
+                    _def_idx = 0
+                    if _excl_atual:
+                        _ea = _sem_acento(_excl_atual)
+                        _m = next((ii for ii, o in enumerate(_opts)
+                                   if _sem_acento(o) == _ea or _ea in _sem_acento(o) or _sem_acento(o) in _ea), None)
+                        if _m is not None:
+                            _def_idx = _m
+                    exclusivo_de_servico = st.selectbox(
+                        "Serviço de origem (escolha um serviço deste bloco)",
+                        _opts, index=_def_idx, key=f"{key_prefix}_exclserv_sel",
+                        help="O aluno precisa estar NESTE serviço, na mesma semana, para poder pegar este plantão.")
+                else:
+                    exclusivo_de_servico = st.text_input(
+                        "Serviço de origem (nome ou abreviação — ex.: Enfermaria)",
+                        value=_excl_atual, key=f"{key_prefix}_exclserv",
+                        help="Adicione os outros serviços do bloco (botão ➕ abaixo) para escolher na lista. "
+                             "Deve ser um serviço do MESMO bloco.")
                 st.caption("A quais turnos/plantões deste serviço a exclusividade se aplica? "
                            "(marque um, vários ou todos)")
                 _exc_atual = pl_srv.get("exclusivo_turnos")
@@ -2367,8 +2431,14 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
 
             # Serviço principal
             n_srv_preview = 1 + st.session_state.get(f"n_srv_{i}", 0)
+            # nomes de todos os serviços do bloco (p/ seletor "serviço de origem" do plantão exclusivo)
+            _all_nomes_blk = [str(st.session_state.get(f"b{i}_s{k}_nome", "") or "").strip()
+                              for k in range(n_srv_preview)]
+            def _irmaos(cur):
+                return [nm for k, nm in enumerate(_all_nomes_blk) if k != cur and nm]
             label_s0 = f"Serviço 1 de {nome_bloco}" if nome_bloco else f"Serviço 1 do Bloco {i+1}"
-            srv_principal = _servico_form(f"b{i}_s0", pl, label_s0, expanded=True)
+            srv_principal = _servico_form(f"b{i}_s0", pl, label_s0, expanded=True,
+                                          outros_servicos=_irmaos(0))
 
             # Serviços adicionais
             key_n_srv = f"n_srv_{i}"
@@ -2385,7 +2455,8 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                 elif j < len(pl.get("servicos_extras",[])):
                     pl_extra = pl["servicos_extras"][j]
                 label_sj = f"Serviço {j+2} de {nome_bloco}" if nome_bloco else f"Serviço {j+2} do Bloco {i+1}"
-                srv_extra = _servico_form(f"b{i}_s{j+1}", pl_extra, label_sj, expanded=False)
+                srv_extra = _servico_form(f"b{i}_s{j+1}", pl_extra, label_sj, expanded=False,
+                                          outros_servicos=_irmaos(j+1))
                 srv_extras.append(srv_extra)
                 if st.button(f"❌ Remover Serviço {j+2}", key=f"rm_srv_{i}_{j}"):
                     st.session_state[key_n_srv] -= 1; st.rerun()
@@ -2472,6 +2543,8 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
             comp_modo_bloco = "auto"
             comp_servico_bloco = ""
             comp_periodos = None
+            comp_obrigatorio = False
+            comp_compensa = False
             if comp_ativo:
                 # serviços de OUTROS blocos já configurados (acima deste)
                 servicos_outros = []
@@ -2518,6 +2591,20 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                             comp_periodos.append(_k)
                 if not comp_periodos:
                     st.warning("Selecione ao menos um período (senão o complemento usará todos por padrão).")
+                comp_obrigatorio = st.checkbox(
+                    "📌 Plantão OBRIGATÓRIO — cada aluno do bloco faz ≥1 por semana (mesmo já tendo batido a CH)",
+                    value=bool(pl.get("complemento_obrigatorio")), key=f"comp_obrig_{i}",
+                    help="Marque para que TODO aluno deste bloco faça pelo menos 1 plantão por semana nos "
+                         "períodos marcados acima — mesmo que já tenha batido a carga horária. "
+                         "Ex.: Ambulatório que faz Plantão PA no FDS toda semana. Respeita o máximo de "
+                         "alunos por turno do serviço de destino e o limite absoluto de CH.")
+                if comp_obrigatorio:
+                    comp_compensa = st.checkbox(
+                        "↩️ Compensar: tirar 1 período de DIA ÚTIL de quem fez o plantão (respeitando o mínimo do serviço)",
+                        value=bool(pl.get("complemento_compensa")), key=f"comp_comp_{i}",
+                        help="Quem faz o plantão obrigatório tem 1 turno de dia útil retirado (preferindo a TARDE) "
+                             "para compensar as horas — só se o serviço continuar com o mínimo de alunos naquele "
+                             "dia/turno E o aluno continuar com a CH mínima. O período liberado vira Área Verde.")
                 st.caption("⚠️ O sistema **respeita o máximo de alunos por turno/dia** do serviço de destino "
                            "e **avisa** (na validação) se não houver vaga suficiente para todos atingirem a CH.")
 
@@ -2534,6 +2621,8 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
             srv_principal["complemento_modo"] = comp_modo_bloco
             srv_principal["complemento_servico"] = comp_servico_bloco
             srv_principal["complemento_periodos"] = comp_periodos
+            srv_principal["complemento_obrigatorio"] = bool(comp_obrigatorio)
+            srv_principal["complemento_compensa"] = bool(comp_compensa)
             for srv_e in srv_extras:
                 srv_e["duracao_por_sg"] = duracao_sgs_bloco
                 srv_e["sem_por_sg"] = int(sem_por_sg)
