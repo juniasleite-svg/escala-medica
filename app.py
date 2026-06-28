@@ -1117,14 +1117,42 @@ def gerar_detalhada_python(calendario, config):
                 if not movimentou:
                     break
 
-            # ── Priorizar período (por serviço): o período secundário só fica com quem fez o
-            # período prioritário do MESMO serviço/dia; os demais ficam com esse período livre
-            # (Área Verde). priorizar_periodo: "manha" (secundário=tarde) ou "tarde" (secundário=manha).
+            # ── Priorizar período (por serviço): (1) EQUILIBRA o período prioritário entre os
+            # dias (evita amontoar muitos alunos num dia só); (2) o período SECUNDÁRIO só fica
+            # com quem fez o prioritário no mesmo dia (os demais ficam com esse período livre =
+            # Área Verde). priorizar_periodo: "manha" (secundário=tarde) ou "tarde" (sec.=manha).
+            _prio_por_si = {}
+            for _si2 in range(len(servs_bloco)):
+                _p = servs_bloco[_si2].get("priorizar_periodo") or \
+                     ("manha" if servs_bloco[_si2].get("priorizar_manha") else "")
+                if _p in ("manha", "tarde"):
+                    _prio_por_si[_si2] = _p
+
+            # (1) equilibra o período prioritário entre os dias (move dos dias mais cheios p/ os mais vazios)
+            for _si2, _p in _prio_por_si.items():
+                _idxs = [ix for ix in range(len(slots)) if slot_svc[ix] == _si2 and slots[ix][3] == _p]
+                for _ in range(80):
+                    _idxs.sort(key=lambda ix: len(assigned[ix]))
+                    _dst, _src = _idxs[0], _idxs[-1]
+                    if len(assigned[_src]) - len(assigned[_dst]) <= 1:
+                        break
+                    _qmx = slots[_dst][7]
+                    if _qmx is not None and len(assigned[_dst]) >= _qmx:
+                        break
+                    _moved = False
+                    for _n in list(assigned[_src]):
+                        if _cabe(_n, _dst, slots[_dst][5], slots[_dst][1], _p, limite, respeitar_cont=False):
+                            _tirar(_n, _src, slots[_src][5], slots[_src][1], _p)
+                            _por(_n, _dst, slots[_dst][5], slots[_dst][1], _p)
+                            _moved = True
+                            break
+                    if not _moved:
+                        break
+
+            # (2) o período secundário só fica com quem fez o prioritário no mesmo dia/serviço
             for _ix in range(len(slots)):
-                _si = slot_svc[_ix]
-                _prio = servs_bloco[_si].get("priorizar_periodo") or \
-                        ("manha" if servs_bloco[_si].get("priorizar_manha") else "")
-                if _prio not in ("manha", "tarde"):
+                _prio = _prio_por_si.get(slot_svc[_ix])
+                if not _prio:
                     continue
                 _sec = "tarde" if _prio == "manha" else "manha"
                 if slots[_ix][3] != _sec:
@@ -1132,7 +1160,7 @@ def gerar_detalhada_python(calendario, config):
                 _data_t = slots[_ix][0]
                 _prim = set()
                 for _jx in range(len(slots)):
-                    if slot_svc[_jx] == _si and slots[_jx][3] == _prio and slots[_jx][0] == _data_t:
+                    if slot_svc[_jx] == slot_svc[_ix] and slots[_jx][3] == _prio and slots[_jx][0] == _data_t:
                         _prim |= set(assigned[_jx])
                 for _n in [x for x in assigned[_ix] if x not in _prim]:
                     _tirar(_n, _ix, slots[_ix][5], slots[_ix][1], _sec)
@@ -1222,14 +1250,16 @@ def gerar_detalhada_python(calendario, config):
                         _pre = "fds" if sl[2] in ("Sáb", "Sab", "Dom") else "du"
                         return f"{_pre}_{sl[4]}"
                     slots_alvo = [sl for sl in slots_alvo if _cat_slot(sl) in _per_ok]
+                comp_load = {}   # (dia3, tk) -> nº de plantões já colocados (p/ ESPALHAR entre dias/turnos)
                 for al in sorted(alunos_b2, key=lambda x: ha.get(x, 0)):
                     # turnos já ocupados por dia (p/ ESPALHAR os plantões e evitar dia sobrecarregado)
                     day_load = {}
                     for (d3, _tk2), s_al in occ.items():
                         if al in s_al:
                             day_load[d3] = day_load.get(d3, 0) + 1
-                    # prioriza os dias mais leves do aluno
-                    ordenados = sorted(slots_alvo, key=lambda sl: day_load.get(sl[2], 0))
+                    # espalha: prioriza (1) o dia/turno MENOS usado pelos plantões e (2) o dia mais leve do aluno
+                    ordenados = sorted(slots_alvo,
+                                       key=lambda sl: (comp_load.get((sl[2], sl[4]), 0), day_load.get(sl[2], 0)))
                     for (sa, data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in ordenados:
                         if ha.get(al, 0) >= alvo_min:
                             break
@@ -1244,6 +1274,7 @@ def gerar_detalhada_python(calendario, config):
                             continue
                         occ.setdefault((dia3, tk), set()).add(al)
                         day_load[dia3] = day_load.get(dia3, 0) + 1
+                        comp_load[(dia3, tk)] = comp_load.get((dia3, tk), 0) + 1
                         ha[al] = ha.get(al, 0) + hrs
                         ent = {"semana": w, "data": data.strftime("%d/%m"), "dia": dia3,
                                "local": locn, "turno": tn, "horario": hor, "horas": hrs,
