@@ -15,7 +15,9 @@ C = {
     "H1":  "1F4E79",  # azul escuro (título)
     "H2":  "2E75B6",  # azul médio (sub-header)
     "H3":  "D6E4F0",  # azul claro (header datas)
-    "FDS": "C5CAD6",  # cinza (fim de semana)
+    "FDS": "7FD1C4",  # TEAL (fim de semana) — colorido e visual, letras pretas
+    "TER": "FFB3B3",  # rosa mais forte (terça ★16h) — antes era apagado
+    "ENAMED": "FF9E9E",  # rosa/vermelho ENAMED (quinta) — mais visível
     # SGs - cor da linha de nome
     "SG1": "D6E4F7", "SG2": "D4EED4", "SG3": "FFF3CD",
     "SG4": "FFD6D6", "SG5": "EDD9F5", "SG6": "D9F5E8",
@@ -28,7 +30,7 @@ C = {
     "LOC5":"F9E79F",  # amarelo
     "LOC6":"FADBD8",  # rosa
     # Especiais
-    "FDS_CELL": "F5F5F5",  # fim de semana sem plantão
+    "FDS_CELL": "D6F0EA",  # fim de semana sem atividade (teal bem claro)
     "FDS_PLT":  "D7BDE2",  # plantão FDS / PA★
     "TARDE_R":  "FFF2CC",  # tarde reduzida
     "VERDE":    "E2EFDA",  # área verde
@@ -158,6 +160,8 @@ def gerar_excel_completo(dados, config):
         abrev = _abrev_local(local, locais_cfg)
         codigo = _codigo_turno(turno, local, locais_cfg)
         valor = f"{abrev}({codigo})" if codigo else f"{abrev}"
+        if entry.get("plantao"):
+            valor = "★" + valor   # plantão de complemento (em outro serviço)
         for nome in alunos:
             if nome not in escala_por_aluno:
                 escala_por_aluno[nome] = {}
@@ -308,7 +312,7 @@ def _aba_resumo_geral(wb, titulo, config, dados, semanas):
         ("T", "Tarde completa", None),
         ("R", "Tarde reduzida (fundo amarelo)", C["TARDE_R"]),
         ("F", "Período FDS manhã Enf/PS", C["FDS"]),
-        ("★ / FDS", "Período PA/FDS — fundo lilás", C["FDS_PLT"]),
+        ("★", "Plantão de complemento em outro serviço — fundo lilás", C["FDS_PLT"]),
         ("AV", "Área Verde — tarde livre", C["VERDE"]),
         ("C", "Cinderela", None),
         ("—", "Sem atividade (FDS sem período)", C["FDS_CELL"]),
@@ -513,7 +517,11 @@ def _aba_escala_nominal(wb, titulo, escala_det, config, semanas, locais_cfg, ano
 
         # Cor especial para FDS e cinderela
         turno_lower = turno.lower() if turno else ""
-        if "fds" in turno_lower or "★" in turno or "plantão" in turno_lower:
+        eh_plantao = bool(entry.get("plantao"))
+        if eh_plantao:
+            cor = C["FDS_PLT"]
+            turno = f"★ {turno}"   # plantão de complemento (em outro serviço)
+        elif "fds" in turno_lower or "★" in turno or "plantão" in turno_lower:
             cor = C["FDS_PLT"]
         elif "reduz" in turno_lower or turno.upper() == "R":
             cor = C["TARDE_R"]
@@ -752,7 +760,7 @@ def _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, se
 
     _header(ws, 1, 1, f"ESCALA POR SUBGRUPO — {grupo} / {turma}  |  {d_ini}–{d_fim}  |  rodízio equilibrado",
             span=60, sz=11)
-    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Período FDS",
+    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Plantão de complemento (outro serviço)",
             span=60, bg=C["H2"], sz=9)
 
     # Montar todas as datas
@@ -852,7 +860,7 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
 
     _header(ws, 1, 1, f"ESCALA INDIVIDUAL — {grupo} / {turma}  |  {d_ini}–{d_fim}  |  rodízio equilibrado",
             span=60, sz=11)
-    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Período PS FDS",
+    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Plantão de complemento (outro serviço)",
             span=60, bg=C["H2"], sz=9)
 
     # Montar todas as datas
@@ -943,7 +951,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
     for i, dt in enumerate(todas_datas):
         eh_fds = dt.weekday() >= 5
         eh_ter = dt.weekday() == 1
-        bg = C["FDS"] if eh_fds else ("FFD7D7" if eh_ter else C["H3"])
+        bg = C["FDS"] if eh_fds else (C["TER"] if eh_ter else C["H3"])
         lbl = dt.strftime("%d/%m")
         _cel(ws, 3, 3+i, lbl, bold=True, bg=bg, sz=8)
 
@@ -954,7 +962,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
         eh_fds = dt.weekday() >= 5
         eh_ter = dt.weekday() == 1
         eh_qui = dt.weekday() == 3
-        bg = C["FDS"] if eh_fds else ("FFD7D7" if eh_ter else C["H3"])
+        bg = C["FDS"] if eh_fds else (C["TER"] if eh_ter else C["H3"])
         dia = DIAS_PT[dt.weekday()]
         if eh_ter: dia += " ★16h"
         if eh_qui: dia = "Qui/ENAMED"
@@ -980,8 +988,9 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
         if isinstance(entry.get("nome"), str) and entry.get("nome"):
             alunos = [entry["nome"]]
         hor = entry.get("horario","")
+        plt = bool(entry.get("plantao"))
         for a in alunos:
-            grade[(data_n, local, turno)].append((a, hor))
+            grade[(data_n, local, turno)].append((a, hor, plt))
 
     # Agrupar turnos por local
     locais_nomes = list(dict.fromkeys([entry.get("local","") for entry in escala_det if entry.get("local")]))
@@ -1013,14 +1022,16 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
                 eh_fds = dt.weekday() >= 5
                 eh_ter = dt.weekday() == 1
                 eh_qui = dt.weekday() == 3
-                bg_h = C["FDS"] if eh_fds else ("FFD7D7" if eh_ter else C["H2"])
+                bg_h = C["FDS"] if eh_fds else (C["TER"] if eh_ter else C["H2"])
                 # Verificar se há ENAMED (quinta)
                 if eh_qui and regras.get("quinta",""):
                     lbl_h = "ENAMED"
-                    bg_h = "FFCCCC"
+                    bg_h = C["ENAMED"]
                 else:
                     lbl_h = {"cinderela": "CIND", "cind": "CIND"}.get(str(turno).strip().lower(), turno.upper()[:5])
-                _cel(ws, row, 3+i, lbl_h, bold=True, bg=bg_h, fc="FFFFFF" if bg_h not in ["FFCCCC"] else "CC0000", sz=8)
+                # texto preto em fundos claros (FDS/terça/ENAMED); branco só no azul do header
+                fc_h = "FFFFFF" if bg_h == C["H2"] else "000000"
+                _cel(ws, row, 3+i, lbl_h, bold=True, bg=bg_h, fc=fc_h, sz=8)
             _cel(ws, row, 2, turno[:10], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
             row += 1
 
@@ -1048,18 +1059,22 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
                     if not lst:
                         data_n2 = dt.strftime("%d/%m")
                         lst = grade.get((data_n2, local, turno), [])
+                    eh_plt = slot < len(lst) and len(lst[slot]) > 2 and lst[slot][2]
                     if eh_fds:
                         bg_c = C["FDS"]
                         nome_c = lst[slot][0].split()[0] if slot < len(lst) else ""
                     elif eh_qui and not lst:
-                        bg_c = "FFCCCC"; nome_c = "ENAMED"
+                        bg_c = C["ENAMED"]; nome_c = "ENAMED"
                     else:
-                        bg_c = "FFD7D7" if eh_ter else "FFFFFF"
+                        bg_c = C["TER"] if eh_ter else "FFFFFF"
                         if slot < len(lst):
                             nome_c = lst[slot][0].split()[0] + " " + (lst[slot][0].split()[1][:1] + "." if len(lst[slot][0].split()) > 1 else "")
                         else:
                             bg_c = C["FDS"] if eh_fds else "F5F5F5"
                             nome_c = ""
+                    if eh_plt and nome_c:
+                        nome_c = "★ " + nome_c            # plantão de complemento
+                        bg_c = C["FDS_PLT"]               # fundo lilás p/ destacar
                     _cel(ws, row, 3+i, nome_c, bg=bg_c, sz=8)
                 ws.row_dimensions[row].height = 13
                 row += 1
@@ -1076,7 +1091,7 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
                     if eh_fds:
                         bg_h = C["FDS"]; hor_c = lst[slot][1] if slot < len(lst) else ""
                     elif eh_qui and not lst:
-                        bg_h = "FFCCCC"; hor_c = ""
+                        bg_h = C["ENAMED"]; hor_c = ""
                     else:
                         bg_h = C["H2"]
                         hor_c = lst[slot][1] if slot < len(lst) else ""
