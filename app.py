@@ -865,12 +865,19 @@ def gerar_detalhada_python(calendario, config):
     def _slots_servico(s, datas):
         """Lista de (data, dia3, turno_nome, turno_key, horario, horas, qmin, qmax, local) do serviço."""
         bloq = set()
+        reduz = {}   # (turno, dia3) -> horário reduzido naquele dia (ex.: terça 13-16h)
         for bm in (s.get("bloqueios_manha") or []):
-            if str(bm.get("tipo", "")).lower().startswith("sem"):
+            tp = str(bm.get("tipo", "")).lower()
+            if tp.startswith("sem"):
                 bloq.add(("manha", _dia_curto(bm.get("dia"))))
+            elif "reduz" in tp and bm.get("horario"):
+                reduz[("manha", _dia_curto(bm.get("dia")))] = bm.get("horario")
         for bt in (s.get("bloqueios_tarde") or []):
-            if str(bt.get("tipo", "")).lower().startswith("sem"):
+            tp = str(bt.get("tipo", "")).lower()
+            if tp.startswith("sem"):
                 bloq.add(("tarde", _dia_curto(bt.get("dia"))))
+            elif "reduz" in tp and bt.get("horario"):
+                reduz[("tarde", _dia_curto(bt.get("dia")))] = bt.get("horario")
 
         def _cnt(mn, mx):
             qmin = max(int(mn) if mn else 0, 1)   # todo turno presente cobre pelo menos 1
@@ -916,7 +923,12 @@ def gerar_detalhada_python(calendario, config):
                     continue
                 if tk == "tarde" and dia3 == "Qui" and "sem tarde" in regra_quinta:
                     continue
-                slots.append((datas[di], dia3, tn, tk, hor, hrs, qmin, qmax, locn))
+                # horário reduzido naquele dia (ex.: terça à tarde até 16h) → ajusta horário e horas
+                h_dia, hrs_dia = hor, hrs
+                if (tk, dia3) in reduz:
+                    h_dia = reduz[(tk, dia3)]
+                    hrs_dia = _dur_horario(h_dia, tk)
+                slots.append((datas[di], dia3, tn, tk, h_dia, hrs_dia, qmin, qmax, locn))
         return slots
 
     detalhada = []
@@ -1027,8 +1039,13 @@ def gerar_detalhada_python(calendario, config):
             def _ordem(tk):
                 return lambda x: (g_tcount.get(x, {}).get(tk, 0), horas_aluno[x])
 
-            # Fase 1 — cobre o mínimo de cada turno (cobertura garantida), sem estourar
-            for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+            # Fase 1 — cobre o mínimo de cada turno (cobertura garantida), sem estourar.
+            # PRIORIDADE para Sáb/Dom: cobre o fim de semana ANTES dos dias úteis, para nunca
+            # deixar um plantão de FDS sem ninguém (pelo menos 1 por período) por falta de orçamento.
+            ordem_fase1 = sorted(range(len(slots)),
+                                 key=lambda ix: 0 if slots[ix][1] in ("Sáb", "Sab", "Dom") else 1)
+            for idx in ordem_fase1:
+                (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) = slots[idx]
                 for cap in (limite, limite_abs):
                     for n in sorted(nomes, key=_ordem(tk)):
                         if len(assigned[idx]) >= qmin:
