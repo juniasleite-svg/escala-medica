@@ -1821,6 +1821,66 @@ with st.expander("📊 Bloco 6 — Formato do Excel", expanded=False):
         ["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas","Escala por Local","Regras e Restrições"],
         default=["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas"])
 
+# BLOCO 7 — Salvar / Carregar definições desta escala (reaproveitar depois)
+with st.expander("💾 Bloco 7 — Salvar / Carregar definições desta escala", expanded=False):
+    st.caption("Guarde TODA a configuração desta escala (especialidade, ano, turma, grupo, alunos, "
+               "blocos, serviços, rodízio e regras) num arquivo, para reabrir e reaproveitar depois "
+               "sem precisar preencher tudo de novo.")
+
+    col_sv, col_ld = st.columns(2)
+
+    # --- SALVAR ---
+    with col_sv:
+        st.markdown("**⬇️ Salvar definições atuais**")
+        definicoes = {
+            "_tipo": "definicoes_escala", "_versao": 1,
+            "resumo": f"{especialidade or 'Escala'} · {ano_curso} · {turma} · {grupo}".strip(" ·"),
+            "especialidade": especialidade, "ano_curso": ano_curso,
+            "turma": turma, "grupo": grupo,
+            "data_inicio": str(data_inicio), "num_semanas": int(num_semanas),
+            "num_sg": int(num_sg), "num_locais": int(num_locais),
+            "alunos_por_sg": alunos_por_sg,
+            "ra_por_aluno": st.session_state.get("ra_por_aluno", {}),
+            "locais": locais,
+            "rodizio_desc": rodizio_desc,
+            "regra_quinta": regra_quinta, "regra_terca": regra_terca,
+            "limite_ch": int(limite_ch), "limite_min": int(limite_min),
+            "limite_abs": int(limite_abs), "regra_fds": regra_fds,
+            "regras_extras": regras_extras,
+        }
+        _slug = _re_val.sub(r"[^A-Za-z0-9]+", "_",
+                       f"{especialidade}_{ano_curso}_{turma}_{grupo}").strip("_") or "escala"
+        st.download_button(
+            "💾 Baixar arquivo de definições (.json)",
+            data=json.dumps(definicoes, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name=f"definicoes_{_slug}.json",
+            mime="application/json",
+            use_container_width=True,
+            help="Salva todas as configurações desta escala num arquivo para reabrir depois.")
+
+    # --- CARREGAR ---
+    with col_ld:
+        st.markdown("**⬆️ Carregar definições salvas**")
+        up_defs = st.file_uploader("Arquivo de definições (.json)", type=["json"], key="upload_defs")
+        if up_defs is not None:
+            if st.button("📂 Carregar estas definições", use_container_width=True):
+                try:
+                    loaded = json.load(up_defs)
+                    if not isinstance(loaded, dict) or loaded.get("_tipo") != "definicoes_escala":
+                        st.error("Arquivo inválido — não parece um arquivo de definições desta escala.")
+                    else:
+                        ra_load = loaded.get("ra_por_aluno", {}) or {}
+                        # limpa TODO o estado do formulário para o prefill assumir
+                        for _k in list(st.session_state.keys()):
+                            del st.session_state[_k]
+                        st.session_state.prefill = loaded
+                        st.session_state.ra_por_aluno = ra_load
+                        st.success("✅ Definições carregadas! Atualizando o formulário...")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao ler o arquivo: {e}")
+        st.caption("Depois de carregar, confira os blocos e clique em **Gerar Escala**.")
+
 # ── PRÉVIA DE VIABILIDADE (antes de gerar) ───────────────────────────────────
 st.divider()
 _total_alunos = sum(len(v) for v in alunos_por_sg.values()) if alunos_por_sg else 0
