@@ -1117,6 +1117,26 @@ def gerar_detalhada_python(calendario, config):
                 if not movimentou:
                     break
 
+            # ── Priorizar período (por serviço): o período secundário só fica com quem fez o
+            # período prioritário do MESMO serviço/dia; os demais ficam com esse período livre
+            # (Área Verde). priorizar_periodo: "manha" (secundário=tarde) ou "tarde" (secundário=manha).
+            for _ix in range(len(slots)):
+                _si = slot_svc[_ix]
+                _prio = servs_bloco[_si].get("priorizar_periodo") or \
+                        ("manha" if servs_bloco[_si].get("priorizar_manha") else "")
+                if _prio not in ("manha", "tarde"):
+                    continue
+                _sec = "tarde" if _prio == "manha" else "manha"
+                if slots[_ix][3] != _sec:
+                    continue
+                _data_t = slots[_ix][0]
+                _prim = set()
+                for _jx in range(len(slots)):
+                    if slot_svc[_jx] == _si and slots[_jx][3] == _prio and slots[_jx][0] == _data_t:
+                        _prim |= set(assigned[_jx])
+                for _n in [x for x in assigned[_ix] if x not in _prim]:
+                    _tirar(_n, _ix, slots[_ix][5], slots[_ix][1], _sec)
+
             for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
                 ch = assigned[idx]
                 if not ch:
@@ -2137,7 +2157,23 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
             quem_fds = st.text_input("Quem faz FDS?", value=pl_srv.get("fds_quem",""), key=f"{key_prefix}_fdsquem")
             comp_fds = st.text_input("Compensação FDS?", value=pl_srv.get("fds_comp",""), key=f"{key_prefix}_fdscomp")
 
+            st.markdown("---")
+            _opc_prio = {"Não priorizar": "", "Manhã": "manha", "Tarde": "tarde"}
+            _prio_atual = pl_srv.get("priorizar_periodo", "manha" if pl_srv.get("priorizar_manha") else "")
+            _prio_label = next((k for k, v in _opc_prio.items() if v == _prio_atual), "Não priorizar")
+            prioriza_label = st.selectbox(
+                "🎯 Priorizar um período neste serviço",
+                list(_opc_prio.keys()),
+                index=list(_opc_prio.keys()).index(_prio_label),
+                key=f"{key_prefix}_prioper",
+                help="Escolha um período como prioritário. O OUTRO período entra SÓ para quem fez o "
+                     "prioritário no mesmo dia/serviço; quem não fez fica com esse período livre (Área Verde). "
+                     "Ex.: 'Manhã' → a tarde só para quem foi de manhã. 'Tarde' → a manhã só para quem vai à tarde. "
+                     "Pode reduzir a carga horária de alguns alunos — use quando um período é o foco.")
+            priorizar_periodo = _opc_prio[prioriza_label]
+
             return {
+                "priorizar_periodo": priorizar_periodo,
                 "nome": nome, "abrev": abrev, "obs": obs, "quem": quem,
                 "n_sgs": int(n_sgs_srv),
                 "duracao_por_sg": duracao_sgs,
