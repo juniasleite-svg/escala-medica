@@ -990,11 +990,13 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
     for li, local in enumerate(locais_nomes):
         cor_loc = _cor_local(local, locais_cfg)
 
-        # Descobrir turnos deste local
+        # Descobrir turnos deste local, em ordem natural: Manhã → Tarde → Cinderela
         turnos_local = list(dict.fromkeys([
             entry.get("turno","") for entry in escala_det
             if entry.get("local","") == local and entry.get("turno")
         ]))
+        _ordem_turno = {"manhã": 0, "manha": 0, "tarde": 1, "cinderela": 2, "cind": 2, "noite": 3}
+        turnos_local.sort(key=lambda t: _ordem_turno.get(str(t).strip().lower(), 9))
 
         # Separador fino entre LOCAIS (não entre turnos) — evita repetir o nome
         if li > 0:
@@ -1017,9 +1019,9 @@ def _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_es
                     lbl_h = "ENAMED"
                     bg_h = "FFCCCC"
                 else:
-                    lbl_h = turno.upper()[:5]
+                    lbl_h = {"cinderela": "CIND", "cind": "CIND"}.get(str(turno).strip().lower(), turno.upper()[:5])
                 _cel(ws, row, 3+i, lbl_h, bold=True, bg=bg_h, fc="FFFFFF" if bg_h not in ["FFCCCC"] else "CC0000", sz=8)
-            _cel(ws, row, 2, turno[:8], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
+            _cel(ws, row, 2, turno[:10], bold=True, bg=C["H2"], fc="FFFFFF", sz=8)
             row += 1
 
             # Descobrir máx de alunos por turno/dia para este local
