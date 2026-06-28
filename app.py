@@ -2002,16 +2002,33 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
             _bytes_alunos2 = arquivo_alunos.read()
             xls2 = pd.ExcelFile(io.BytesIO(_bytes_alunos2), engine="openpyxl")
             grupos_disp = [s for s in xls2.sheet_names if "GRUPO" in s.upper()]
-            grupo_sel = st.selectbox("Selecione o grupo", grupos_disp) if grupos_disp else None
+            # default já no grupo informado no Bloco 1 (ex.: "Grupo C" -> aba "GRUPO C")
+            _gp = (grupo or "").upper().replace("GRUPO", "").strip()
+            _idx = next((i for i, s in enumerate(grupos_disp)
+                         if _gp and s.upper().replace("GRUPO", "").strip() == _gp), 0)
+            grupo_sel = st.selectbox("Selecione o grupo", grupos_disp, index=_idx) if grupos_disp else None
             if grupo_sel:
                 df_g = pd.read_excel(io.BytesIO(_bytes_alunos2), engine="openpyxl", sheet_name=grupo_sel)
                 if "OPÇÃO" in df_g.columns:
-                    opcoes = df_g["OPÇÃO"].dropna().unique()
-                    opcao_sel = st.selectbox("Opção de subgrupos", opcoes)
+                    opcoes = list(df_g["OPÇÃO"].dropna().unique())
+                    # default na opção que bate com o nº de subgrupos escolhido
+                    _oidx = next((i for i, o in enumerate(opcoes) if f"{int(num_sg)} SG" in str(o)), 0)
+                    opcao_sel = st.selectbox("Opção de subgrupos", opcoes, index=_oidx)
                     df_f = df_g[df_g["OPÇÃO"] == opcao_sel]
                     alunos_por_sg, ra_map = _ler_subgrupos(df_f)
                     st.session_state["ra_por_aluno"] = ra_map
-                    st.success(f"✅ {len(df_f)} alunos em {len(alunos_por_sg)} SGs (com RA)")
+                    # confirmação + alerta se o rodízio atual do grupo não bate com a especialidade
+                    _rod = ""
+                    if "Rodízio Atual" in df_f.columns and df_f["Rodízio Atual"].notna().any():
+                        _rod = str(df_f["Rodízio Atual"].dropna().iloc[0])
+                    _esp = _sem_acento(especialidade)
+                    if _esp and _rod and _esp not in _sem_acento(_rod):
+                        st.warning(
+                            f"⚠️ O **{grupo_sel}** está em **{_rod.split('(')[0].strip()}** neste período — "
+                            f"isso não bate com a especialidade **{especialidade}**. "
+                            f"Confira se o grupo selecionado é mesmo o correto."
+                        )
+                    st.success(f"✅ {grupo_sel}: {len(df_f)} alunos em {len(alunos_por_sg)} SGs (com RA)")
         except Exception as e:
             st.error(f"Erro: {e}")
 
