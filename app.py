@@ -887,12 +887,12 @@ def gerar_detalhada_python(calendario, config):
             ocupado = {}  # (dia3,turno_key) -> set
             assigned = [[] for _ in slots]
 
-            def _cabe(n, idx, hrs, dia3, tk, cap):
+            def _cabe(n, idx, hrs, dia3, tk, cap, respeitar_cont=True):
                 if n in assigned[idx] or n in ocupado.get((dia3, tk), set()):
                     return False
                 if horas_aluno[n] + hrs > cap:
                     return False
-                if usa_continuidade and dia3 in dias3[:5]:  # só dias úteis
+                if respeitar_cont and usa_continuidade and dia3 in dias3[:5]:  # só dias úteis
                     wd = dias3.index(dia3)
                     if plano.get(n, {}).get(wd) != slot_svc[idx]:
                         return False
@@ -904,6 +904,13 @@ def gerar_detalhada_python(calendario, config):
                 horas_aluno[n] += hrs
                 g_tcount.setdefault(n, {})
                 g_tcount[n][tk] = g_tcount[n].get(tk, 0) + 1
+
+            def _tirar(n, idx, hrs, dia3, tk):
+                assigned[idx].remove(n)
+                ocupado.get((dia3, tk), set()).discard(n)
+                horas_aluno[n] -= hrs
+                if g_tcount.get(n, {}).get(tk):
+                    g_tcount[n][tk] -= 1
 
             # ordena candidatos: menos turnos DESSE tipo no semestre primeiro, depois menos horas na semana
             def _ordem(tk):
@@ -934,6 +941,36 @@ def gerar_detalhada_python(calendario, config):
                         n = min(cands, key=_ordem(tk))
                         _por(n, idx, hrs, dia3, tk)
                         progresso = True
+
+            # Fase 3 — reequilíbrio: transfere turnos de quem está ACIMA do alvo para quem está ABAIXO
+            ciclos = 0
+            while ciclos < 300:
+                ciclos += 1
+                pobres = sorted([n for n in nomes if horas_aluno[n] < alvo_min], key=lambda x: horas_aluno[x])
+                if not pobres:
+                    break
+                movimentou = False
+                for p in pobres:
+                    # na fase de reequilíbrio a continuidade é RELAXADA (a CH alvo tem prioridade)
+                    for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+                        if not _cabe(p, idx, hrs, dia3, tk, limite, respeitar_cont=False):
+                            continue
+                        teto = qmax if qmax is not None else len(nomes)
+                        if len(assigned[idx]) < teto:
+                            _por(p, idx, hrs, dia3, tk); movimentou = True; break
+                        # slot cheio: troca por um colega "rico" que continua >= alvo após sair
+                        ricos = [r for r in assigned[idx] if r != p
+                                 and horas_aluno[r] - hrs >= alvo_min
+                                 and horas_aluno[r] - hrs >= horas_aluno[p] + hrs]
+                        if ricos:
+                            r = max(ricos, key=lambda x: horas_aluno[x])
+                            _tirar(r, idx, hrs, dia3, tk)
+                            _por(p, idx, hrs, dia3, tk)
+                            movimentou = True; break
+                    if movimentou:
+                        break
+                if not movimentou:
+                    break
 
             for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
                 ch = assigned[idx]
