@@ -457,22 +457,32 @@ def validar_escala(dados, config):
                     ausentes.append({"servico": s.get("nome") or s.get("abrev") or f"serviço {i+1}",
                                      "bloco": bloco, "semana": sem})
 
-    # ── Aluno que não passou por algum serviço (rodízio incompleto) ──────────
+    # ── Tempo por serviço por aluno (horas, % e quem não passou) ─────────────
     visitou = _dd(set)
     todos_locais = set()
+    hser = _dd(lambda: _dd(float))  # aluno -> local -> horas
+    htot = _dd(float)               # aluno -> horas totais
     for e in det:
         loc = str(e.get("local", ""))
         if not loc:
             continue
         todos_locais.add(loc)
+        h = _horas_entrada(e)
         for al in _alunos_entrada(e):
             visitou[al].add(loc)
+            hser[al][loc] += h
+            htot[al] += h
+    locais_lista = sorted(todos_locais)
     nao_passou = []
     for al in (visitou or {}):
         faltam = todos_locais - visitou[al]
         if faltam:
             nao_passou.append({"aluno": al, "faltam": sorted(faltam)})
     nao_passou.sort(key=lambda x: x["aluno"])
+    pct_servico = {}
+    for al in htot:
+        tot = htot[al] or 1
+        pct_servico[al] = {loc: round(hser[al].get(loc, 0) / tot * 100) for loc in locais_lista}
 
     semanas_ruins = sorted(
         {e["semana"] for e in estouros} | {c["semana"] for c in conflitos}
@@ -481,7 +491,7 @@ def validar_escala(dados, config):
     return {
         "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
         "desvios": desvios, "ausentes": ausentes, "subcarga": subcarga,
-        "nao_passou": nao_passou,
+        "nao_passou": nao_passou, "pct_servico": pct_servico, "locais_lista": locais_lista,
         "limite": limite, "limite_abs": limite_abs, "alvo_min": alvo_min,
         "ok": (not estouros and not conflitos and not desvios and not ausentes),
         "semanas_ruins": semanas_ruins,
@@ -1029,6 +1039,31 @@ def mostrar_validacao(val):
         if len(val["nao_passou"]) > 25:
             st.caption(f"...e mais {len(val['nao_passou']) - 25}")
         st.caption("💡 Geralmente é a tabela de rodízio (Bloco 4): ajuste para que todos os SGs passem por todos os locais.")
+    elif val.get("pct_servico"):
+        st.success("✅ Todos os alunos foram alocados em **todos os serviços**.")
+
+    # ── % de tempo de cada aluno em cada serviço (visual) ────────────────────
+    if val.get("pct_servico") and val.get("locais_lista"):
+        locs = val["locais_lista"]
+        pcts = val["pct_servico"]
+        # destaca quem passa pouco tempo (>0% e <15%) em algum serviço
+        pouco = []
+        for al, d in pcts.items():
+            for loc in locs:
+                if 0 < d.get(loc, 0) < 15:
+                    pouco.append(f"{al} — {loc}: {d[loc]}%")
+        with st.expander("📊 % de tempo de cada aluno por serviço", expanded=bool(pouco)):
+            rows = []
+            for al in sorted(pcts):
+                row = {"Aluno": al}
+                for loc in locs:
+                    p = pcts[al].get(loc, 0)
+                    row[loc] = f"{p}%" if p else "—"
+                rows.append(row)
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            if pouco:
+                st.warning("⚠️ **Pouco tempo (<15%) em algum serviço:**\n- " + "\n- ".join(pouco[:20]))
+            st.caption("'—' = não passou nesse serviço. % = fração da carga horária total do aluno naquele serviço.")
     if val.get("subcarga"):
         alvo = val.get("alvo_min", 34)
         st.warning(f"⏬ **{len(val['subcarga'])} aluno(s)/semana ABAIXO da CH mínima alvo ({alvo}h):**")
