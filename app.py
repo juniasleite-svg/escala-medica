@@ -1734,6 +1734,17 @@ if modo == "📂 Importar escala existente e modificar":
 CONTEÚDO:
 {conteudo}
 
+⚠️ BLOCO ≠ SERVIÇO (muito importante):
+Um "bloco de rodízio" é uma ETAPA do rodízio pela qual cada subgrupo passa, e pode conter 1, 2 ou 3
+SERVIÇOS que acontecem JUNTOS naquela etapa. Ex.: "Enfermaria Cirúrgica + Centro Cirúrgico" são 2
+serviços do MESMO bloco; 3 estágios de Anestesiologia em hospitais diferentes que ocorrem no mesmo
+período também podem ser 1 bloco com 3 serviços. NÃO crie um bloco separado para cada serviço.
+- Agrupe no MESMO bloco os serviços que os alunos cursam ao mesmo tempo / no mesmo período do rodízio
+  (em geral mesmo hospital ou mesma etapa). Use "nome_bloco" para o nome da etapa, os campos do
+  serviço principal no próprio item, e "servicos_extras" para o 2º/3º serviço do mesmo bloco.
+- "num_locais" = número de BLOCOS (etapas do rodízio), NÃO de serviços. Cada item de "locais" é 1 bloco.
+- Se um bloco tem só 1 serviço, deixe "servicos_extras": [].
+
 Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
 {{
   "especialidade": "",
@@ -1747,6 +1758,7 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
   "num_locais": 3,
   "locais": [
     {{
+      "nome_bloco": "ex: Enfermaria Cirúrgica e Centro Cirúrgico",
       "nome": "", "abrev": "", "obs": "",
       "manha": "07-13h", "min_manha": 0, "max_manha": 6,
       "tarde": "12-18h", "min_tarde": 3, "max_tarde": 4,
@@ -1755,7 +1767,15 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
       "fds": false, "fds_manha": "", "fds_tarde": "", "fds_cind": "",
       "fds_min_manha": 0, "fds_max_manha": 2, "fds_min_tarde": 0, "fds_max_tarde": 2,
       "fds_min_cind": 0, "fds_max_cind": 0,
-      "fds_quem": "", "fds_comp": "", "servico2": "", "servico2_obs": "",
+      "fds_quem": "", "fds_comp": "",
+      "servicos_extras": [
+        {{"nome": "2º (ou 3º) serviço DESTE MESMO bloco — deixe esta lista vazia se o bloco tem só 1 serviço",
+          "abrev": "", "obs": "",
+          "manha": "07-13h", "min_manha": 0, "max_manha": 6,
+          "tarde": "", "min_tarde": 0, "max_tarde": 0,
+          "cinderela": "", "min_cind": 0, "max_cind": 0, "dias_cind": [],
+          "fds": false, "fds_manha": "", "fds_tarde": "", "fds_cind": ""}}
+      ],
       "duracao_por_sg": {{}}, "cov_tarde": 3
     }}
   ],
@@ -1953,7 +1973,7 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
     cols_rot = st.columns(int(num_locais))
     rotacao_semanas = []
     for j in range(int(num_locais)):
-        nome_bloco_j = pf_locais[j].get("nome_bloco", pf_locais[j].get("nome", f"Bloco {j+1}")) if j < len(pf_locais) else f"Bloco {j+1}"
+        nome_bloco_j = st.session_state.get(f"nome_bloco_{j}") or (pf_locais[j].get("nome_bloco", pf_locais[j].get("nome", f"Bloco {j+1}")) if j < len(pf_locais) else f"Bloco {j+1}")
         with cols_rot[j]:
             val = st.number_input(
                 f"Bloco {j+1}",
@@ -1963,7 +1983,7 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                 help=nome_bloco_j
             )
             rotacao_semanas.append(val)
-            st.caption(nome_bloco_j[:20])
+            st.caption(f"🏥 {nome_bloco_j}")
 
     soma_rot = sum(rotacao_semanas)
     if soma_rot == int(num_semanas):
