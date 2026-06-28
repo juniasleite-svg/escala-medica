@@ -970,6 +970,21 @@ def gerar_detalhada_python(calendario, config):
                 slots.extend(novos)
                 slot_svc.extend([si] * len(novos))
 
+            # Plantão EXCLUSIVO: serviço cujo turno só pode ser feito por quem, na mesma semana,
+            # está escalado em OUTRO serviço (de origem) do mesmo bloco. Mapeia si -> si_origem.
+            _excl_por_si = {}
+            for _si, _s in enumerate(servs_bloco):
+                _alvo = _norm(str(_s.get("exclusivo_de_servico", "") or ""))
+                if not _alvo:
+                    continue
+                for _sj, _s2 in enumerate(servs_bloco):
+                    if _sj == _si:
+                        continue
+                    _rot = {_norm(_s2.get("nome")), _norm(_s2.get("abrev"))} - {""}
+                    if _alvo in _rot or any(r and (_alvo in r or r in _alvo) for r in _rot):
+                        _excl_por_si[_si] = _sj
+                        break
+
             # Plano de continuidade POR SERVIÇO: a continuidade prende os MESMOS alunos
             # ao SERVIÇO escolhido (ex: Enfermaria) por N dias úteis seguidos; depois gira para
             # que todos passem por ele. IMPORTANTE: o aluno preso à Enfermaria de manhã CONTINUA
@@ -1013,6 +1028,11 @@ def gerar_detalhada_python(calendario, config):
                     return False
                 if horas_aluno[n] + hrs > cap:
                     return False
+                # plantão exclusivo: n precisa já estar no serviço de origem nesta semana
+                _alvo_si = _excl_por_si.get(slot_svc[idx])
+                if _alvo_si is not None:
+                    if not any(slot_svc[_j] == _alvo_si and n in assigned[_j] for _j in range(len(slots))):
+                        return False
                 if respeitar_cont and usa_continuidade and dia3 in dias3[:5]:  # só dias úteis
                     # a trava vale SÓ para os turnos do serviço de continuidade:
                     # ali só entram os alunos "presos" da janela; os demais serviços ficam livres
@@ -1047,11 +1067,14 @@ def gerar_detalhada_python(calendario, config):
             # depois os dias úteis, e a CINDERELA de FDS por ÚLTIMO (só se sobrar/precisar de CH).
             def _prio_slot(ix):
                 d = slots[ix][1]; tk = slots[ix][3]
+                # serviços exclusivos por ÚLTIMO dentro do bucket: o serviço de origem
+                # precisa já ter alunos antes de filtrar quem pode pegar o plantão exclusivo.
+                excl = 1 if slot_svc[ix] in _excl_por_si else 0
                 if _eh_fds_dia(d) and tk != "cind":
-                    return 0
+                    return (0, excl)
                 if _eh_fds_dia(d) and tk == "cind":
-                    return 2   # cinderela de FDS = última prioridade
-                return 1       # dias úteis
+                    return (2, excl)   # cinderela de FDS = última prioridade
+                return (1, excl)       # dias úteis
 
             # Fase 1 — cobre o mínimo de cada turno (cobertura garantida), sem estourar.
             # Cobre manhã/tarde do FDS ANTES dos dias úteis; cinderela de FDS fica por último.
@@ -2258,8 +2281,26 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                      "Pode reduzir a carga horária de alguns alunos — use quando um período é o foco.")
             priorizar_periodo = _opc_prio[prioriza_label]
 
+            # Plantão exclusivo: só alunos que, na mesma semana, estão em OUTRO serviço do bloco
+            _excl_atual = pl_srv.get("exclusivo_de_servico", "")
+            _excl_on = st.checkbox(
+                "🔒 Plantão exclusivo de quem está em OUTRO serviço nesta semana",
+                value=bool(_excl_atual), key=f"{key_prefix}_exclon",
+                help="Marque para que ESTE serviço/plantão só receba alunos que, na MESMA semana, "
+                     "estão escalados em outro serviço do MESMO bloco (ex.: a Enfermaria). "
+                     "Útil p/ plantões que devem ser cobertos por quem já está na enfermaria. "
+                     "Modo rígido: se não houver alunos elegíveis, o turno pode ficar sem cobertura.")
+            exclusivo_de_servico = ""
+            if _excl_on:
+                exclusivo_de_servico = st.text_input(
+                    "Serviço de origem (nome ou abreviação — ex.: Enfermaria)",
+                    value=_excl_atual, key=f"{key_prefix}_exclserv",
+                    help="Nome do serviço onde o aluno precisa estar naquela semana para poder pegar "
+                         "este plantão. Deve ser um serviço do MESMO bloco.")
+
             return {
                 "priorizar_periodo": priorizar_periodo,
+                "exclusivo_de_servico": exclusivo_de_servico,
                 "nome": nome, "abrev": abrev, "obs": obs, "quem": quem,
                 "n_sgs": int(n_sgs_srv),
                 "duracao_por_sg": duracao_sgs,
