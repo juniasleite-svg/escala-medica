@@ -23,6 +23,119 @@ def _sa(s):
     return "".join(c for c in unicodedata.normalize("NFKD", str(s or "")) if not unicodedata.combining(c)).strip().lower()
 
 
+def _normserv(s):
+    """Normaliza nome de serviço p/ casamento: sem acento, minúsculo, pontuação -> espaço."""
+    s = "".join(c for c in unicodedata.normalize("NFKD", str(s or "")) if not unicodedata.combining(c)).lower()
+    return " ".join("".join(c if c.isalnum() else " " for c in s).split())
+
+
+# ───────────── Catálogo de serviços cadastrados no Lovable (fonte: cadastro oficial) ─────────────
+# (nome EXATO cadastrado no Lovable, especialidade)
+_LOVABLE_SERVICOS = [
+    ('AMB OFTALMO MANDIC', 'CLÍNICA CIRÚRGICA'),
+    ('AMBULATÓRIO CIRURGIA HSLMA', 'CLÍNICA CIRÚRGICA'),
+    ('ANESTESIO - SC LEME', 'CLÍNICA CIRÚRGICA'),
+    ('ANESTESIO - SCA', 'CLÍNICA CIRÚRGICA'),
+    ('ANESTESIO-MANDIC', 'CLÍNICA CIRÚRGICA'),
+    ('CC MANDIC', 'CLÍNICA CIRÚRGICA'),
+    ('CC SCA', 'CLÍNICA CIRÚRGICA'),
+    ('ENF CIR SCA', 'CLÍNICA CIRÚRGICA'),
+    ('ENFERMARIA CIRÚRGICA E CC-LEME', 'CLÍNICA CIRÚRGICA'),
+    ('ORTOPEDIA SCA', 'CLÍNICA CIRÚRGICA'),
+    ('PS SCA', 'CLÍNICA CIRÚRGICA'),
+    ('SAMU', 'CLÍNICA CIRÚRGICA'),
+    ('AMBULATÓRIO CLÍNICA MÉDICA-MANDIC', 'CLÍNICA MÉDICA'),
+    ('ENF CM HSLMA', 'CLÍNICA MÉDICA'),
+    ('ENFMANDIC', 'CLÍNICA MÉDICA'),
+    ('PA ADULTO MANDIC', 'CLÍNICA MÉDICA'),
+    ('Pronto Socorro SC LEME', 'CLÍNICA MÉDICA'),
+    ('PS ADULTO SCA', 'CLÍNICA MÉDICA'),
+    ('SALA EMERGÊNCIA- LEME', 'CLÍNICA MÉDICA'),
+    ('UPA ADULTO MANDIC', 'CLÍNICA MÉDICA'),
+    ('UTI HSLM', 'CLÍNICA MÉDICA'),
+    ('AULA DE CORREÇÕES DE QUESTÕES - REFORÇO ENAMED', 'DIVERSAS'),
+    ('AULA TEÓRICA DO MÓDULO', 'DIVERSAS'),
+    ('AMBULATÓRIO GO', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('AULA TEÓRICA GO', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('CC GO MANDIC', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('CENTRO OBSTÉTRICO ARARAS', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('CENTRO OBSTÉTRICO LEME', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('CIRURGIA GINECOLÓGICA SCA', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('CO LEME', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('CO SCA', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('ENFERMARIA GO SCA', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('PNAR GO SCA', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('PS GO SCA', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('SIMULAÇÃO GO', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('UBS Alberto Franzini - Ginecologia e Obstetrícia', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('USG GO MANDIC', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('USG GO SCA', 'GINECOLOGIA E OBSTETRÍCIA'),
+    ('ESF BENTO FERES', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('ESF EDMUNDO ULSON', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('ESF FERMIN BLANCO', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('ESF JERÔNYMO OMETTO', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('ESF LUCIA MENEGHETTI', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('ESF OPHELIA PESCE', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('ESF SIMÕES PONTES', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('LIVRE MFC', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('PSF NARCISO GOMES II', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('UBS', 'MEDICINA DE FAMÍLIA E COMUNIDADE'),
+    ('AMBULATÓRIO PED HSLMA', 'PEDIATRIA'),
+    ('AULA TEÓRICA PED 5º ANO (08-12H)', 'PEDIATRIA'),
+    ('AULA TEÓRICA PED 6º ANO (10-12H)', 'PEDIATRIA'),
+    ('CORREÇÃO DE QUESTÕES', 'PEDIATRIA'),
+    ('ENF PED LEME', 'PEDIATRIA'),
+    ('ENFERMARIA PED MANDIC', 'PEDIATRIA'),
+    ('PA PED MANDIC', 'PEDIATRIA'),
+    ('PNAR SCA', 'PEDIATRIA'),
+    ('SALA PARTO E AC LEME', 'PEDIATRIA'),
+    ('SC LIMEIRA PED', 'PEDIATRIA'),
+    ('SIMULAÇÃO PED', 'PEDIATRIA'),
+    ('UPA PED MANDIC', 'PEDIATRIA'),
+    ('ESTÁGIO ELETIVO', 'SAÚDE MENTAL'),
+    ('AMBULATÓRIO PSQ HSLMA', 'SAÚDE MENTAL (1 MÊS) + ELETIVO (1 MÊS)'),
+    ('AULA TEÓRICA SM (08-10H)', 'SAÚDE MENTAL (1 MÊS) + ELETIVO (1 MÊS)'),
+    ('ELETIVO', 'SAÚDE MENTAL (1 MÊS) + ELETIVO (1 MÊS)'),
+    ('ENF QD + TRIAGEM PSQ HSLMA', 'SAÚDE MENTAL (1 MÊS) + ELETIVO (1 MÊS)'),
+    ('ENFERMARIA PQS HSLMA', 'SAÚDE MENTAL (1 MÊS) + ELETIVO (1 MÊS)'),
+    ('AMBULATÓRIO DEPENDÊNCIA QUÍMICA INFANTIL', 'SAÚDE MENTAL + ELETIVO'),
+    ('ÁREA LIVRE', 'TODAS'),
+    ('ÁREA VERDE', 'TODAS'),
+    ('CIRURGIA SCA', 'TODAS'),
+]
+
+# Mapa: nome normalizado do serviço cadastrado -> nome EXATO (canônico) no Lovable.
+_REG_BY_NORM = {_normserv(n): n for n, _e in _LOVABLE_SERVICOS}
+
+# Apelidos: nomes/abreviações usados no app que NÃO batem 1:1 com o cadastro do Lovable.
+_ALIAS_RAW = {
+    # Clínica Cirúrgica
+    "Enfermaria Cirúrgica e centro cirurgico SC LEME": "ENFERMARIA CIRÚRGICA E CC-LEME",
+    "ENF CIR LEME": "ENFERMARIA CIRÚRGICA E CC-LEME",
+    "Anestesiologia - SCA": "ANESTESIO - SCA",
+    "ANESTESIO SCA": "ANESTESIO - SCA",
+    "Anestesio Mandic": "ANESTESIO-MANDIC",
+    "Anest mandic": "ANESTESIO-MANDIC",
+    "Anestesio SC LEME": "ANESTESIO - SC LEME",
+    "ANEST leme": "ANESTESIO - SC LEME",
+    "ENFERMARIA/CC SCA": "ENF CIR SCA",
+    "ENF/CC SCA": "ENF CIR SCA",
+}
+_ALIAS = {_normserv(k): v for k, v in _ALIAS_RAW.items()}
+
+
+def _lovable_nome(nome):
+    """Devolve o nome EXATO cadastrado no Lovable. Cai no original se não houver correspondência."""
+    if not nome:
+        return nome
+    k = _normserv(nome)
+    if k in _REG_BY_NORM:
+        return _REG_BY_NORM[k]
+    if k in _ALIAS:
+        return _ALIAS[k]
+    return nome
+
+
 def _turno_key(t):
     t = _sa(t)
     if "manh" in t:
@@ -156,6 +269,7 @@ def gerar_template_lovable(dados, config):
             snome = s.get("nome") or s.get("abrev") or ""
             if not snome:
                 continue
+            snome = _lovable_nome(snome)   # nome exato cadastrado no Lovable
             # turnos de dia útil
             for tk, hor, mx in (("manha", s.get("manha"), s.get("max_manha")),
                                 ("tarde", s.get("tarde"), s.get("max_tarde")),
@@ -190,6 +304,25 @@ def gerar_template_lovable(dados, config):
     for c in range(1, num_sem + 2):
         wd.cell(1, c).fill = HDR
         wd.cell(1, c).font = HDRF
+    # casa o 'dest' do calendário (ex.: "ENF CIR LEME (Leme1)") com o bloco correto.
+    # Espelha a resolução do escalonador: identifica o bloco pelo nome/abrev DELE e,
+    # em seguida, por qualquer serviço (nome/abrev) que ele contenha.
+    def _bloco_de_dest(dest):
+        a = _normserv(dest)
+        if not a:
+            return ""
+        for i, loc in enumerate(locais):
+            ident = {_normserv(loc.get("nome_bloco")), _normserv(loc.get("nome")),
+                     _normserv(loc.get("abrev"))} - {""}
+            svc_match = any(
+                x and x in a
+                for s in _servicos_do_bloco(loc)
+                for x in ({_normserv(s.get("nome")), _normserv(s.get("abrev"))} - {""})
+            )
+            if svc_match or any(x and x in a for x in ident):
+                return nomes_bloco[i]
+        return dest  # fallback: mantém o texto original
+
     # mapa (sg, semana) -> nome do bloco, a partir do calendário de rodízio
     blk_por_sg_sem = {}
     for entry in calend:
@@ -199,11 +332,7 @@ def gerar_template_lovable(dados, config):
             sgn = "".join(ch for ch in str(sg_key) if ch.isdigit())
             if not sgn:
                 continue
-            # casar 'dest' com um nome de bloco
-            alvo = _sa(dest)
-            achou = next((nb for nb in nomes_bloco if _sa(nb) in alvo or alvo in _sa(nb)
-                          or _sa(nb).split("-", 1)[-1] in alvo), dest)
-            blk_por_sg_sem[(sgn, int(sem))] = achou
+            blk_por_sg_sem[(sgn, int(sem))] = _bloco_de_dest(dest)
     for sg in sorted(alunos_por_sg.keys(), key=lambda x: int("".join(c for c in x if c.isdigit()) or 0)):
         sgn = "".join(c for c in sg if c.isdigit())
         wd.append([sgn] + [blk_por_sg_sem.get((sgn, s + 1), "") for s in range(num_sem)])
@@ -211,21 +340,28 @@ def gerar_template_lovable(dados, config):
     for s in range(num_sem):
         wd.column_dimensions[chr(66 + s)].width = 34
 
-    # ── _Serviços ──
+    # ── _Serviços ──  (Nome = nome EXATO cadastrado no Lovable)
     wsv = wb.create_sheet("_Serviços")
-    wsv.append(["Nome", "Nome Curto"])
+    wsv.append(["Nome", "Nome Curto", "nome do serviço cadastrado no lovable"])
+    for c in range(1, 4):
+        wsv.cell(1, c).fill = HDR
+        wsv.cell(1, c).font = HDRF
     vistos = set()
     for loc in locais:
         for s in _servicos_do_bloco(loc):
             nm = s.get("nome") or s.get("abrev") or ""
-            if nm and _sa(nm) not in vistos:
-                vistos.add(_sa(nm))
-                wsv.append([nm, s.get("abrev", "")])
+            if not nm:
+                continue
+            lov = _lovable_nome(nm)
+            if _sa(lov) not in vistos:
+                vistos.add(_sa(lov))
+                wsv.append([lov, s.get("abrev", ""), lov])
     for extra in ("ÁREA VERDE",):
         if _sa(extra) not in vistos:
-            wsv.append([extra, "VERDE"])
-    wsv.column_dimensions["A"].width = 40
-    wsv.column_dimensions["B"].width = 22
+            wsv.append([extra, "VERDE", "ÁREA VERDE"])
+    wsv.column_dimensions["A"].width = 38
+    wsv.column_dimensions["B"].width = 18
+    wsv.column_dimensions["C"].width = 38
 
     # ── _Blocos ──
     wb_ = wb.create_sheet("_Blocos")
@@ -299,7 +435,7 @@ def gerar_correcao_lovable(dados, config):
         data = str(e.get("data", ""))
         dd = data[:5] if len(data) >= 5 else data
         tk = _turno_key(e.get("turno"))
-        serv = e.get("local", "")
+        serv = _lovable_nome(e.get("local", ""))   # nome exato cadastrado no Lovable
         for al in (e.get("alunos") or ([e["nome"]] if e.get("nome") else [])):
             idx.setdefault((al, dd), {})[tk] = serv
 
@@ -311,7 +447,7 @@ def gerar_correcao_lovable(dados, config):
     wi.title = "Instruções"
     di = semanas[0][0].strftime("%d/%m/%Y") if semanas else ""
     df = semanas[-1][-1].strftime("%d/%m/%Y") if semanas else ""
-    servicos = sorted({(s.get("nome") or s.get("abrev") or "")
+    servicos = sorted({_lovable_nome(s.get("nome") or s.get("abrev") or "")
                        for loc in config.get("locais", []) for s in _servicos_do_bloco(loc)} - {""})
     linhas = [
         f"Planilha de Correção — {cod} ({config.get('especialidade','')} {config.get('ano_curso','')} {config.get('turma','')})",
