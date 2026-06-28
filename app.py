@@ -910,6 +910,7 @@ def gerar_detalhada_python(calendario, config):
             fds.append(("Tarde", "tarde", s.get("fds_tarde"), _dur_horario(s.get("fds_tarde"), "tarde"), qn, qx, None))
         if s.get("fds_cind"):
             qn, qx = _cnt(int(s.get("fds_min_cind") or 0), s.get("fds_max_cind"))
+            qn = int(s.get("fds_min_cind") or 0)   # cinderela de FDS: respeita o mín REAL (0) — prioriza manhã/tarde
             fds.append(("Cinderela", "cind", s.get("fds_cind"), _dur_horario(s.get("fds_cind"), "cind"), qn, qx, None))
 
         slots = []
@@ -1039,11 +1040,22 @@ def gerar_detalhada_python(calendario, config):
             def _ordem(tk):
                 return lambda x: (g_tcount.get(x, {}).get(tk, 0), horas_aluno[x])
 
+            def _eh_fds_dia(d):
+                return d in ("Sáb", "Sab", "Dom")
+
+            # prioridade dos plantões de FDS: manhã/tarde do fim de semana primeiro (garante ≥1),
+            # depois os dias úteis, e a CINDERELA de FDS por ÚLTIMO (só se sobrar/precisar de CH).
+            def _prio_slot(ix):
+                d = slots[ix][1]; tk = slots[ix][3]
+                if _eh_fds_dia(d) and tk != "cind":
+                    return 0
+                if _eh_fds_dia(d) and tk == "cind":
+                    return 2   # cinderela de FDS = última prioridade
+                return 1       # dias úteis
+
             # Fase 1 — cobre o mínimo de cada turno (cobertura garantida), sem estourar.
-            # PRIORIDADE para Sáb/Dom: cobre o fim de semana ANTES dos dias úteis, para nunca
-            # deixar um plantão de FDS sem ninguém (pelo menos 1 por período) por falta de orçamento.
-            ordem_fase1 = sorted(range(len(slots)),
-                                 key=lambda ix: 0 if slots[ix][1] in ("Sáb", "Sab", "Dom") else 1)
+            # Cobre manhã/tarde do FDS ANTES dos dias úteis; cinderela de FDS fica por último.
+            ordem_fase1 = sorted(range(len(slots)), key=_prio_slot)
             for idx in ordem_fase1:
                 (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) = slots[idx]
                 for cap in (limite, limite_abs):
@@ -1055,11 +1067,14 @@ def gerar_detalhada_python(calendario, config):
                     if len(assigned[idx]) >= qmin:
                         break
 
-            # Fase 2 — completa quem está abaixo do alvo (sem passar de 40h), equilibrando por tipo de turno
+            # Fase 2 — completa quem está abaixo do alvo (sem passar de 40h), equilibrando por tipo de turno.
+            # Usa a cinderela de FDS por ÚLTIMO (prioriza manhã/tarde para fechar a CH).
+            ordem_fase2 = sorted(range(len(slots)), key=_prio_slot)
             progresso = True
             while progresso and any(horas_aluno[n] < alvo_min for n in nomes):
                 progresso = False
-                for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+                for idx in ordem_fase2:
+                    (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) = slots[idx]
                     teto = qmax if qmax is not None else len(nomes)
                     while len(assigned[idx]) < teto:
                         cands = [n for n in nomes if horas_aluno[n] < alvo_min
@@ -1079,8 +1094,10 @@ def gerar_detalhada_python(calendario, config):
                     break
                 movimentou = False
                 for p in pobres:
-                    # na fase de reequilíbrio a continuidade é RELAXADA (a CH alvo tem prioridade)
-                    for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+                    # na fase de reequilíbrio a continuidade é RELAXADA (a CH alvo tem prioridade);
+                    # cinderela de FDS continua sendo a última opção
+                    for idx in ordem_fase2:
+                        (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) = slots[idx]
                         if not _cabe(p, idx, hrs, dia3, tk, limite, respeitar_cont=False):
                             continue
                         teto = qmax if qmax is not None else len(nomes)
