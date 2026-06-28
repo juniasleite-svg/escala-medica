@@ -1976,11 +1976,53 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
     num_sg = st.number_input("Número de subgrupos", 2, 8, _clamp(pf.get("num_sg",6), 2, 8, 6))
     alunos_por_sg = {}
 
-    # Se importado, mostrar os alunos pré-preenchidos editáveis
-    if pf.get("alunos_por_sg"):
+    # Se a BASE de alunos foi enviada: mostra SEMPRE o seletor de Grupo (A/B/C...) + opção de
+    # subgrupos e carrega os alunos ao vivo. Vale para "Criar nova" e para "Importar"
+    # (substitui os alunos que vieram da escala importada).
+    if arquivo_alunos:
+        try:
+            _bytes_alunos2 = arquivo_alunos.read()
+            xls2 = pd.ExcelFile(io.BytesIO(_bytes_alunos2), engine="openpyxl")
+            grupos_disp = [s for s in xls2.sheet_names if "GRUPO" in s.upper()]
+            if grupos_disp:
+                # default já no grupo informado/importado (ex.: "Grupo C" -> aba "GRUPO C")
+                _gp = (grupo or pf.get("grupo", "") or "").upper().replace("GRUPO", "").strip()
+                _idx = next((i for i, s in enumerate(grupos_disp)
+                             if _gp and s.upper().replace("GRUPO", "").strip() == _gp), 0)
+                col_g1, col_g2 = st.columns(2)
+                with col_g1:
+                    grupo_sel = st.selectbox("👥 Grupo (escolha o grupo certo)", grupos_disp, index=_idx)
+                df_g = pd.read_excel(io.BytesIO(_bytes_alunos2), engine="openpyxl", sheet_name=grupo_sel)
+                if "OPÇÃO" in df_g.columns:
+                    opcoes = list(df_g["OPÇÃO"].dropna().unique())
+                    # default na opção que bate com o nº de subgrupos escolhido
+                    _oidx = next((i for i, o in enumerate(opcoes) if f"{int(num_sg)} SG" in str(o)), 0)
+                    with col_g2:
+                        opcao_sel = st.selectbox("Opção de subgrupos", opcoes, index=_oidx)
+                    df_f = df_g[df_g["OPÇÃO"] == opcao_sel]
+                    alunos_por_sg, ra_map = _ler_subgrupos(df_f)
+                    st.session_state["ra_por_aluno"] = ra_map
+                    # alerta se o rodízio atual do grupo não bate com a especialidade
+                    _rod = ""
+                    if "Rodízio Atual" in df_f.columns and df_f["Rodízio Atual"].notna().any():
+                        _rod = str(df_f["Rodízio Atual"].dropna().iloc[0])
+                    _esp = _sem_acento(especialidade)
+                    if _esp and _rod and _esp not in _sem_acento(_rod):
+                        st.warning(
+                            f"⚠️ O **{grupo_sel}** está em **{_rod.split('(')[0].strip()}** neste período — "
+                            f"isso não bate com a especialidade **{especialidade}**. "
+                            f"Escolha o grupo correto no seletor acima."
+                        )
+                    st.success(f"✅ {grupo_sel}: {len(df_f)} alunos em {len(alunos_por_sg)} SGs (com RA). "
+                               f"Primeiros: {', '.join(df_f['Nome Completo'].head(3).astype(str))}…")
+        except Exception as e:
+            st.error(f"Erro: {e}")
+
+    # Sem base enviada, mas veio de importação: mostra os alunos importados editáveis
+    elif pf.get("alunos_por_sg"):
         if pf.get("_alunos_base_grupo"):
-            st.success(f"✅ Alunos carregados da base oficial — **{pf['_alunos_base_grupo']}** "
-                       f"(grupo da escala importada).")
+            st.success(f"✅ Alunos carregados da base oficial — **{pf['_alunos_base_grupo']}**.")
+        st.info("💡 Para trocar de grupo (A/B/C...), suba a **base de alunos** acima — aparecerá o seletor de grupo.")
         st.caption("✏️ Alunos importados — edite se necessário:")
         for sg, nomes in sorted(pf["alunos_por_sg"].items(), key=lambda x: int(x[0])):
             k = f"sg_imp_{sg}"
@@ -1990,74 +2032,6 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
             with st.expander(f"SG{sg} — {len(atual)} alunos", expanded=False):
                 txt = st.text_area(f"Alunos SG{sg}", key=k, height=100)
                 alunos_por_sg[sg] = [n.strip() for n in txt.strip().split("\n") if n.strip()]
-
-        # Opção de recarregar com outra opção de SGs
-        if arquivo_alunos:
-            col_sg1, col_sg2 = st.columns(2)
-            with col_sg1:
-                opcao_sg = st.selectbox("Mudar para:", ["Manter atual","4 Subgrupos","6 Subgrupos","8 Subgrupos"])
-            with col_sg2:
-                if opcao_sg != "Manter atual" and st.button("🔄 Recarregar da planilha"):
-                    try:
-                        n_alvo = int(opcao_sg.split()[0])
-                        _bytes_alunos_imp = arquivo_alunos.read()
-                        xls_a = pd.ExcelFile(io.BytesIO(_bytes_alunos_imp), engine="openpyxl")
-                        sheets_g = [s for s in xls_a.sheet_names if "GRUPO" in s.upper()]
-                        gp = pf.get("grupo","").upper().replace("GRUPO","").strip()
-                        sh = next((s for s in sheets_g if gp in s.upper()), sheets_g[0] if sheets_g else None)
-                        if sh:
-                            df_r = pd.read_excel(io.BytesIO(_bytes_alunos_imp), engine="openpyxl", sheet_name=sh)
-                            if "OPÇÃO" in df_r.columns:
-                                op = next((o for o in df_r["OPÇÃO"].dropna().unique() if f"{n_alvo} SG" in str(o)), None)
-                                if op:
-                                    df_f = df_r[df_r["OPÇÃO"]==op]
-                                    novos, ra_map = _ler_subgrupos(df_f)
-                                    pf["alunos_por_sg"] = novos
-                                    pf["num_sg"] = n_alvo
-                                    st.session_state.prefill = pf
-                                    st.session_state["ra_por_aluno"] = ra_map
-                                    # limpa cache das caixas para refletir os novos alunos/SGs
-                                    for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("sg_imp_")]:
-                                        del st.session_state[_k]
-                                    st.success(f"✅ {n_alvo} SGs carregados ({sum(len(v) for v in novos.values())} alunos, com RA)!")
-                                    st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro: {e}")
-
-    elif arquivo_alunos:
-        try:
-            _bytes_alunos2 = arquivo_alunos.read()
-            xls2 = pd.ExcelFile(io.BytesIO(_bytes_alunos2), engine="openpyxl")
-            grupos_disp = [s for s in xls2.sheet_names if "GRUPO" in s.upper()]
-            # default já no grupo informado no Bloco 1 (ex.: "Grupo C" -> aba "GRUPO C")
-            _gp = (grupo or "").upper().replace("GRUPO", "").strip()
-            _idx = next((i for i, s in enumerate(grupos_disp)
-                         if _gp and s.upper().replace("GRUPO", "").strip() == _gp), 0)
-            grupo_sel = st.selectbox("Selecione o grupo", grupos_disp, index=_idx) if grupos_disp else None
-            if grupo_sel:
-                df_g = pd.read_excel(io.BytesIO(_bytes_alunos2), engine="openpyxl", sheet_name=grupo_sel)
-                if "OPÇÃO" in df_g.columns:
-                    opcoes = list(df_g["OPÇÃO"].dropna().unique())
-                    # default na opção que bate com o nº de subgrupos escolhido
-                    _oidx = next((i for i, o in enumerate(opcoes) if f"{int(num_sg)} SG" in str(o)), 0)
-                    opcao_sel = st.selectbox("Opção de subgrupos", opcoes, index=_oidx)
-                    df_f = df_g[df_g["OPÇÃO"] == opcao_sel]
-                    alunos_por_sg, ra_map = _ler_subgrupos(df_f)
-                    st.session_state["ra_por_aluno"] = ra_map
-                    # confirmação + alerta se o rodízio atual do grupo não bate com a especialidade
-                    _rod = ""
-                    if "Rodízio Atual" in df_f.columns and df_f["Rodízio Atual"].notna().any():
-                        _rod = str(df_f["Rodízio Atual"].dropna().iloc[0])
-                    _esp = _sem_acento(especialidade)
-                    if _esp and _rod and _esp not in _sem_acento(_rod):
-                        st.warning(
-                            f"⚠️ O **{grupo_sel}** está em **{_rod.split('(')[0].strip()}** neste período — "
-                            f"isso não bate com a especialidade **{especialidade}**. "
-                            f"Confira se o grupo selecionado é mesmo o correto."
-                        )
-                    st.success(f"✅ {grupo_sel}: {len(df_f)} alunos em {len(alunos_por_sg)} SGs (com RA)")
-        except Exception as e:
-            st.error(f"Erro: {e}")
 
     if not alunos_por_sg:
         st.caption("Digite manualmente:")
@@ -2534,7 +2508,7 @@ with st.expander("🔄 Bloco 6 — Tabela de Rodízio", expanded=True):
         sugestoes.append({"nome":"🔄 Individual (cada SG passa por todos)","texto":"\n".join(linhas2)})
         return sugestoes
 
-    nomes_loc_atual = [l.get("nome","") for l in locais]
+    nomes_loc_atual = [(l.get("nome_bloco") or l.get("nome") or "") for l in locais]
     n_sg_atual = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
 
     if st.button("💡 Sugerir rodízio automaticamente", use_container_width=True):
