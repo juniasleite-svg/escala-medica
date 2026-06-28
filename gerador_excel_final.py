@@ -403,8 +403,34 @@ def _aba_calendario_rodizio(wb, titulo, calendario, config, semanas):
         ws.column_dimensions[get_column_letter(3+i)].width = 22
 
     cores_loc = [C["ENF"], C["PS"], C["AMB"], C["LOC4"], C["LOC5"], C["LOC6"]]
-    loc_nomes = [l.get("nome","") for l in locais_cfg]
-    loc_cor_map = {n: cores_loc[i%len(cores_loc)] for i,n in enumerate(loc_nomes)}
+
+    def _clarear(hexc, fator):
+        """Clareia uma cor hex em direção ao branco (fator 0=igual, 1=branco)."""
+        try:
+            r = int(hexc[0:2], 16); g = int(hexc[2:4], 16); b = int(hexc[4:6], 16)
+        except Exception:
+            return hexc
+        r = int(r + (255 - r) * fator); g = int(g + (255 - g) * fator); b = int(b + (255 - b) * fator)
+        return f"{r:02X}{g:02X}{b:02X}"
+
+    # Cor POR SERVIÇO: cada bloco tem uma cor-base; dentro do bloco, o 1º serviço fica na cor
+    # cheia (mais escura) e os demais em tons progressivamente mais claros da MESMA cor.
+    # Ex.: Enf+PA → Enfermaria = azul escuro · Enf+PA → PA mandic = azul claro.
+    loc_cor_map = {}
+    for i, l in enumerate(locais_cfg):
+        base = cores_loc[i % len(cores_loc)]
+        servs = [l] + (l.get("servicos_extras") or [])
+        # rótulo do bloco (sem serviço específico) recebe a cor-base
+        for r in [l.get("nome_bloco",""), l.get("abrev","")]:
+            if r and r not in loc_cor_map:
+                loc_cor_map[r] = base
+        for j, se in enumerate(servs):
+            shade = base if j == 0 else _clarear(base, min(0.30 + 0.22 * j, 0.78))
+            for r in [se.get("nome",""), se.get("abrev","")]:
+                if r and r not in loc_cor_map:
+                    loc_cor_map[r] = shade
+    # casa rótulos mais longos primeiro (ex: "Enfermaria"/"PA mandic" antes de "Enf+PA")
+    loc_cor_itens = sorted(loc_cor_map.items(), key=lambda kv: -len(kv[0]))
 
     for ri, sem in enumerate(calendario):
         row = ri + 4
@@ -418,7 +444,7 @@ def _aba_calendario_rodizio(wb, titulo, calendario, config, semanas):
         aloc = sem.get("alocacao",{})
         for i, sg in enumerate(sgs):
             local = aloc.get(f"SG{sg}", aloc.get(sg, ""))
-            cor = next((c for n,c in loc_cor_map.items() if n.lower() in local.lower()), "F2F2F2") if local else "F2F2F2"
+            cor = next((c for n,c in loc_cor_itens if n.lower() in local.lower()), "F2F2F2") if local else "F2F2F2"
             _cel(ws, row, 3+i, local, bg=cor, sz=9)
 
     # Blocos

@@ -484,6 +484,59 @@ def validar_escala(dados, config):
         tot = htot[al] or 1
         pct_servico[al] = {loc: round(hser[al].get(loc, 0) / tot * 100) for loc in locais_lista}
 
+    # ── Sobrecarga de bloco numa semana: alunos demais p/ a capacidade → CH não fecha ──
+    # (ex.: 4 SGs no mesmo Ambulatório na mesma semana → cada um só consegue ~18h)
+    def _cap_bloco(loc):
+        cap = 0.0
+        d_tarde = 5 - (1 if "sem tarde" in regra_quinta else 0)
+        for s in [loc] + (loc.get("servicos_extras") or []):
+            for tk, hor, mx, dias in [
+                ("manha", s.get("manha"), s.get("max_manha"), 5),
+                ("tarde", s.get("tarde"), s.get("max_tarde"), d_tarde),
+                ("cind", s.get("cinderela"), s.get("max_cind"), len(s.get("dias_cind") or []) or 5),
+                ("manha", s.get("fds_manha"), s.get("fds_max_manha"), 2),
+                ("tarde", s.get("fds_tarde"), s.get("fds_max_tarde"), 2),
+                ("cind", s.get("fds_cind"), s.get("fds_max_cind"), 2),
+            ]:
+                if not hor:
+                    continue
+                try:
+                    q = int(mx) if str(mx) not in ("None", "", "0") else 99
+                except (TypeError, ValueError):
+                    q = 99
+                cap += dias * max(q, 1) * _dur_horario(hor, tk)
+        return cap
+
+    blocos_cfg = config.get("locais", [])
+    caps_bloco = [_cap_bloco(lc) for lc in blocos_cfg]
+    rotulos_bloco = []
+    for lc in blocos_cfg:
+        rot = {_norm(lc.get("nome_bloco")), _norm(lc.get("nome")), _norm(lc.get("abrev"))} - {""}
+        for s in [lc] + (lc.get("servicos_extras") or []):
+            rot |= ({_norm(s.get("nome")), _norm(s.get("abrev"))} - {""})
+        rotulos_bloco.append(rot)
+    alunos_bs = _dd(set)  # (bidx, semana) -> alunos distintos
+    for e in det:
+        loc = _norm(e.get("local", ""))
+        sem = e.get("semana", "?")
+        bidx = next((bi for bi, rot in enumerate(rotulos_bloco)
+                     if any(r and (r in loc or loc in r) for r in rot)), None)
+        if bidx is None:
+            continue
+        for al in _alunos_entrada(e):
+            alunos_bs[(bidx, sem)].add(al)
+    sobrecarga_bloco = []
+    for (bidx, sem), als in alunos_bs.items():
+        n = len(als)
+        if n <= 0:
+            continue
+        ch_max = caps_bloco[bidx] / n
+        if ch_max < alvo_min - 0.5:
+            sobrecarga_bloco.append({
+                "bloco": blocos_cfg[bidx].get("nome_bloco") or blocos_cfg[bidx].get("nome") or f"Bloco {bidx+1}",
+                "semana": sem, "alunos": n, "ch_max": round(ch_max, 1)})
+    sobrecarga_bloco.sort(key=lambda x: (x["ch_max"], str(x["semana"])))
+
     semanas_ruins = sorted(
         {e["semana"] for e in estouros} | {c["semana"] for c in conflitos}
         | {d["semana"] for d in desvios} | {a["semana"] for a in ausentes},
@@ -492,6 +545,7 @@ def validar_escala(dados, config):
         "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
         "desvios": desvios, "ausentes": ausentes, "subcarga": subcarga,
         "nao_passou": nao_passou, "pct_servico": pct_servico, "locais_lista": locais_lista,
+        "sobrecarga_bloco": sobrecarga_bloco,
         "limite": limite, "limite_abs": limite_abs, "alvo_min": alvo_min,
         "ok": (not estouros and not conflitos and not desvios and not ausentes),
         "semanas_ruins": semanas_ruins,
@@ -1087,6 +1141,15 @@ def mostrar_validacao(val):
             if pouco:
                 st.warning("⚠️ **Pouco tempo (<15%) em algum serviço:**\n- " + "\n- ".join(pouco[:20]))
             st.caption("'—' = não passou nesse serviço. % = fração da carga horária total do aluno naquele serviço.")
+    if val.get("sobrecarga_bloco"):
+        alvo = val.get("alvo_min", 34)
+        st.error(f"🚨 **Bloco lotado em alguma semana (alunos demais p/ a capacidade → CH não fecha):**")
+        for sb in val["sobrecarga_bloco"][:20]:
+            st.markdown(f"- **{sb['bloco']}** — semana {sb['semana']}: **{sb['alunos']} alunos** ao mesmo tempo; "
+                        f"o bloco só comporta ~**{sb['ch_max']}h/aluno** (alvo {alvo}h)")
+        st.caption("💡 **Esta é a causa da CH baixa.** No rodízio (Bloco 4), evite colocar tantos subgrupos no "
+                   "mesmo bloco na mesma semana — distribua-os por outros blocos. Ou aumente a capacidade do "
+                   "bloco (mais turnos/serviços ou maior máx/dia).")
     if val.get("subcarga"):
         alvo = val.get("alvo_min", 34)
         st.warning(f"⏬ **{len(val['subcarga'])} aluno(s)/semana ABAIXO da CH mínima alvo ({alvo}h):**")
