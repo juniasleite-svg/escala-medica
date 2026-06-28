@@ -725,6 +725,7 @@ def gerar_detalhada_python(calendario, config):
     limite = int(reg.get("limite_ch", 40))
     limite_abs = int(reg.get("limite_abs", 43))
     alvo_min = int(reg.get("limite_min", 34))   # CH mínima alvo (completa até aqui se possível)
+    dias_consec = int(reg.get("dias_consec", 0))  # 0 = desligado; N = manter no mesmo serviço por N dias
     regra_quinta = str(reg.get("quinta", "")).lower()
     alunos_por_sg = config.get("alunos_por_sg", {})
     num_sem = int(config.get("num_semanas", 8))
@@ -818,6 +819,7 @@ def gerar_detalhada_python(calendario, config):
         return slots
 
     detalhada = []
+    g_tcount = {}  # contagem GLOBAL por aluno e tipo de turno (equilíbrio ao longo do semestre)
     for w in range(1, num_sem + 1):
         base = d0 + timedelta(weeks=w - 1)
         datas = [base + timedelta(days=i) for i in range(7)]
@@ -841,27 +843,57 @@ def gerar_detalhada_python(calendario, config):
                 continue
             nomes = [n for n, _ in estud]
             sg_de = {n: sg for n, sg in estud}
-            # Todos os turnos de TODOS os serviços do bloco
+            servs_bloco = b["servs"]
+            # Todos os turnos de TODOS os serviços do bloco (guardando o serviço de cada slot)
             slots = []
-            for s in b["servs"]:
-                slots.extend(_slots_servico(s, datas))
+            slot_svc = []
+            for si, s in enumerate(servs_bloco):
+                novos = _slots_servico(s, datas)
+                slots.extend(novos)
+                slot_svc.extend([si] * len(novos))
+
+            # Plano de continuidade POR SUBGRUPO: o SG inteiro (as duplas) fica no mesmo serviço
+            # por blocos de N dias úteis, e o SG todo roda junto para o próximo serviço.
+            plano = {}
+            usa_continuidade = dias_consec > 0 and len(servs_bloco) > 1
+            if usa_continuidade:
+                k = len(servs_bloco)
+                sgs_lista = sorted(sgset, key=lambda x: int(x) if str(x).isdigit() else 99)
+                plano_sg = {}
+                for j, sg in enumerate(sgs_lista):
+                    plano_sg[sg] = {wd: (j + (wd // dias_consec)) % k for wd in range(5)}
+                plano = {n: plano_sg[sg_de[n]] for n in nomes}
+
             horas_aluno = {n: 0.0 for n in nomes}
             ocupado = {}  # (dia3,turno_key) -> set
             assigned = [[] for _ in slots]
 
             def _cabe(n, idx, hrs, dia3, tk, cap):
-                return (n not in assigned[idx] and n not in ocupado.get((dia3, tk), set())
-                        and horas_aluno[n] + hrs <= cap)
+                if n in assigned[idx] or n in ocupado.get((dia3, tk), set()):
+                    return False
+                if horas_aluno[n] + hrs > cap:
+                    return False
+                if usa_continuidade and dia3 in dias3[:5]:  # só dias úteis
+                    wd = dias3.index(dia3)
+                    if plano.get(n, {}).get(wd) != slot_svc[idx]:
+                        return False
+                return True
 
             def _por(n, idx, hrs, dia3, tk):
                 assigned[idx].append(n)
                 ocupado.setdefault((dia3, tk), set()).add(n)
                 horas_aluno[n] += hrs
+                g_tcount.setdefault(n, {})
+                g_tcount[n][tk] = g_tcount[n].get(tk, 0) + 1
+
+            # ordena candidatos: menos turnos DESSE tipo no semestre primeiro, depois menos horas na semana
+            def _ordem(tk):
+                return lambda x: (g_tcount.get(x, {}).get(tk, 0), horas_aluno[x])
 
             # Fase 1 — cobre o mínimo de cada turno (cobertura garantida), sem estourar
             for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
                 for cap in (limite, limite_abs):
-                    for n in sorted(nomes, key=lambda x: horas_aluno[x]):
+                    for n in sorted(nomes, key=_ordem(tk)):
                         if len(assigned[idx]) >= qmin:
                             break
                         if _cabe(n, idx, hrs, dia3, tk, cap):
@@ -869,19 +901,20 @@ def gerar_detalhada_python(calendario, config):
                     if len(assigned[idx]) >= qmin:
                         break
 
-            # Fase 2 — completa quem está abaixo do alvo, usando a folga (até o máx), sem passar de 40h
+            # Fase 2 — completa quem está abaixo do alvo (sem passar de 40h), equilibrando por tipo de turno
             progresso = True
             while progresso and any(horas_aluno[n] < alvo_min for n in nomes):
                 progresso = False
-                for n in sorted([x for x in nomes if horas_aluno[x] < alvo_min], key=lambda x: horas_aluno[x]):
-                    for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
-                        teto = qmax if qmax is not None else len(nomes)
-                        if len(assigned[idx]) >= teto:
-                            continue
-                        if _cabe(n, idx, hrs, dia3, tk, limite):
-                            _por(n, idx, hrs, dia3, tk)
-                            progresso = True
+                for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+                    teto = qmax if qmax is not None else len(nomes)
+                    while len(assigned[idx]) < teto:
+                        cands = [n for n in nomes if horas_aluno[n] < alvo_min
+                                 and _cabe(n, idx, hrs, dia3, tk, limite)]
+                        if not cands:
                             break
+                        n = min(cands, key=_ordem(tk))
+                        _por(n, idx, hrs, dia3, tk)
+                        progresso = True
 
             for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
                 ch = assigned[idx]
@@ -1628,6 +1661,13 @@ with st.expander("⚙️ Bloco 5 — Regras Especiais", expanded=True):
         limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, int(pf.get("limite_abs",43)))
         regra_fds = st.text_area("Regras de plantão FDS", value=pf.get("regra_fds",""), height=80)
         regras_extras = st.text_area("Outras regras", value=pf.get("regras_extras",""), height=80)
+    st.markdown("---")
+    manter_consec = st.checkbox(
+        "🔗 Manter o aluno no mesmo serviço por vários dias seguidos (quando possível)",
+        value=bool(pf.get("dias_consec", 0)),
+        help="Em blocos com mais de um serviço (ex: Enf + PA), evita que o aluno fique pulando de serviço todo dia.")
+    dias_consec = st.number_input("Dias consecutivos no mesmo serviço", 2, 5,
+        int(pf.get("dias_consec", 3) or 3)) if manter_consec else 0
 
 # BLOCO 6
 with st.expander("📊 Bloco 6 — Formato do Excel", expanded=False):
@@ -1754,7 +1794,7 @@ Extras: {regras_extras}
             "rodizio_desc": rodizio_desc,
             "regras_especiais": {"quinta": regra_quinta, "terca": regra_terca,
                 "limite_ch": int(limite_ch), "limite_abs": int(limite_abs),
-                "limite_min": int(limite_min), "fds": regra_fds},
+                "limite_min": int(limite_min), "dias_consec": int(dias_consec), "fds": regra_fds},
             "pares": [], "blocos": [],
         }
         with st.spinner("Passo 1/2 — Calendário e resumo de horas... ⏳"):
