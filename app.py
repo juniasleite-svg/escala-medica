@@ -1961,8 +1961,15 @@ with st.expander("📊 Bloco 4 — Formato do Excel", expanded=False):
 with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
     pf_locais = pf.get("locais", [])
     num_locais_def = _clamp(pf.get("num_locais", len(pf_locais) if pf_locais else 3), 2, 8, 3)
-    num_locais = st.number_input("Número de blocos de rodízio", 2, 8, num_locais_def,
-        help="Cada bloco é um local de rodízio que pode conter 1 ou mais serviços vinculados.")
+    st.info(
+        "💡 **Bloco ≠ serviço.** Um **bloco** é uma ETAPA do rodízio e pode juntar **1, 2 ou 3 serviços**. "
+        "Em cada bloco, use o botão **➕ Adicionar serviço** para agrupar mais de um. Exemplos:\n"
+        "- Bloco *Anestesiologia* → 3 serviços (Santa Casa Leme + SCA + Mandic)\n"
+        "- Bloco *Enfermaria + Centro Cirúrgico* → 2 serviços\n\n"
+        "Num bloco com vários serviços, os alunos **rodam entre eles** ao longo das semanas do bloco."
+    )
+    num_locais = st.number_input("Número de blocos de rodízio (etapas do rodízio, não serviços)", 2, 8, num_locais_def,
+        help="Cada bloco é uma ETAPA do rodízio e pode conter 1, 2 ou 3 serviços (use ➕ Adicionar serviço dentro do bloco).")
     locais = []
 
     # ── Configuração global do rodízio ──────────────────────────────────────
@@ -2161,6 +2168,13 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                 )
             with col_bloco_b:
                 st.markdown(f"## 🏥 {nome_bloco or f'Bloco {i+1}'}")
+                _nsrv_bloco = 1 + st.session_state.get(f"n_srv_{i}", 0)
+                _nomes_srv = [str(st.session_state.get(f"b{i}_s{k}_nome", "") or "").strip() for k in range(_nsrv_bloco)]
+                _nomes_srv = [n for n in _nomes_srv if n]
+                if _nomes_srv:
+                    st.caption(f"🧩 **{len(_nomes_srv)} serviço(s) neste bloco:** " + "  +  ".join(_nomes_srv))
+                else:
+                    st.caption(f"🧩 {_nsrv_bloco} serviço(s) neste bloco — use ➕ abaixo para adicionar mais")
 
             # Serviço principal
             n_srv_preview = 1 + st.session_state.get(f"n_srv_{i}", 0)
@@ -2187,11 +2201,16 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
                 if st.button(f"❌ Remover Serviço {j+2}", key=f"rm_srv_{i}_{j}"):
                     st.session_state[key_n_srv] -= 1; st.rerun()
 
-            if st.button(f"➕ Adicionar serviço a {nome_bloco or f'Bloco {i+1}'}", key=f"add_srv_{i}"):
+            if st.button(f"➕ Adicionar outro serviço a este bloco ({nome_bloco or f'Bloco {i+1}'})",
+                         key=f"add_srv_{i}", type="primary", use_container_width=True,
+                         help="Agrupe 2 ou 3 serviços no MESMO bloco (ex.: as 3 Anestesiologias, ou Enfermaria + Centro Cirúrgico)."):
                 st.session_state[key_n_srv] += 1; st.rerun()
 
             # Duração e distribuição de SGs no nível do BLOCO
             st.markdown("**📅 Distribuição de SGs neste bloco:**")
+            if 1 + st.session_state.get(key_n_srv, 0) > 1:
+                st.caption("ℹ️ Este bloco tem **mais de um serviço** → aqui você define quantas semanas cada SG "
+                           "passa, fazendo o **rodízio interno** entre os serviços do bloco (ex.: ~1 semana em cada).")
             n_sgs_total = len(alunos_por_sg) if alunos_por_sg else int(num_sg)
             n_srv_bloco = 1 + st.session_state.get(key_n_srv, 0)
             pl_dur_bloco = pl.get("duracao_por_sg", {})
