@@ -975,7 +975,7 @@ def gerar_detalhada_python(calendario, config):
             # que todos passem por ele. IMPORTANTE: o aluno preso à Enfermaria de manhã CONTINUA
             # livre para ser escalado no PA à tarde / cinderela nos mesmos dias (a trava vale só
             # para os turnos do PRÓPRIO serviço de continuidade, não bloqueia os outros serviços).
-            # Configurada POR BLOCO + SERVIÇO (Bloco 3), não global.
+            # Configurada POR BLOCO + SERVIÇO (Bloco 5), não global.
             dias_consec = int(b["loc"].get("dias_consec", 0) or 0)
             cont_nome = _norm(str(b["loc"].get("consec_servico", "") or ""))
             pinned = {}  # wd (0..4) -> set de alunos presos ao serviço de continuidade
@@ -1268,7 +1268,7 @@ def mostrar_validacao(val):
             st.markdown(f"- **{np_['aluno']}**: faltou passar em {', '.join(np_['faltam'])}")
         if len(val["nao_passou"]) > 25:
             st.caption(f"...e mais {len(val['nao_passou']) - 25}")
-        st.caption("💡 Geralmente é a tabela de rodízio (Bloco 4): ajuste para que todos os SGs passem por todos os locais.")
+        st.caption("💡 Geralmente é a tabela de rodízio (Bloco 6): ajuste para que todos os SGs passem por todos os locais.")
     elif val.get("pct_servico"):
         st.success("✅ Todos os alunos foram alocados em **todos os serviços**.")
 
@@ -1300,7 +1300,7 @@ def mostrar_validacao(val):
         for sb in val["sobrecarga_bloco"][:20]:
             st.markdown(f"- **{sb['bloco']}** — semana {sb['semana']}: **{sb['alunos']} alunos** ao mesmo tempo; "
                         f"o bloco só comporta ~**{sb['ch_max']}h/aluno** (alvo {alvo}h)")
-        st.caption("💡 **Esta é a causa da CH baixa.** No rodízio (Bloco 4), evite colocar tantos subgrupos no "
+        st.caption("💡 **Esta é a causa da CH baixa.** No rodízio (Bloco 6), evite colocar tantos subgrupos no "
                    "mesmo bloco na mesma semana — distribua-os por outros blocos. Ou aumente a capacidade do "
                    "bloco (mais turnos/serviços ou maior máx/dia).")
     if val.get("plantoes_complemento"):
@@ -1313,9 +1313,9 @@ def mostrar_validacao(val):
             st.markdown(f"- **{sgc['aluno']}** — semana {sgc['semana']}: só **{sgc['horas']}h** (alvo {alvo}h)")
         if len(val["subcarga"]) > 20:
             st.caption(f"...e mais {len(val['subcarga']) - 20}")
-        st.caption("💡 Para subir a CH: ative o **complemento com plantões em outro serviço** (Bloco 3), "
+        st.caption("💡 Para subir a CH: ative o **complemento com plantões em outro serviço** (Bloco 5), "
                    "ative mais turnos no bloco (ex: cinderela), aumente o máx/dia dos turnos, "
-                   "ou reduza a CH mínima alvo no Bloco 5. Se já usa complemento e ainda falta, "
+                   "ou reduza a CH mínima alvo no Bloco 3. Se já usa complemento e ainda falta, "
                    "o serviço de destino atingiu o **máximo de alunos** — aumente o máx/dia dele.")
 
 # ── Pedidos extraordinários: avaliação e trocas automáticas ──────────────────
@@ -1393,7 +1393,7 @@ def avaliar_pedidos_extraordinarios(dados, config, pedidos):
     return linhas
 
 def _faixa_servico(config, local, turno_key, dia):
-    """(min, max) de alunos para um local/turno/dia, do Bloco 3."""
+    """(min, max) de alunos para um local/turno/dia, do Bloco 5."""
     eh_fds = _dia_curto(dia) in ("Sab", "Dom")
     chave = "turnos_fds" if eh_fds else "turnos"
     for s in _servicos_config(config):
@@ -1464,7 +1464,7 @@ def _achar_reposicao(det, config, al, local, turno_perdido, sem, limite_abs, dat
 
 def aplicar_trocas_pedidos(dados, config, avaliacao):
     """Dispensa o aluno dos dias pedidos e tenta repor o serviço em outro dia,
-    respeitando mín/máx por local/turno (Bloco 3) e a CH absoluta. Retorna (dados_novo, relatorio)."""
+    respeitando mín/máx por local/turno (Bloco 5) e a CH absoluta. Retorna (dados_novo, relatorio)."""
     import copy
     dados = copy.deepcopy(dados)
     det = dados.get("escala_detalhada") or []
@@ -1901,7 +1901,30 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
                 alunos_por_sg[str(sg)] = [n.strip() for n in txt.strip().split("\n") if n.strip()]
 
 # BLOCO 3 — Locais
-with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
+# BLOCO 3
+with st.expander("⚙️ Bloco 3 — Regras Especiais", expanded=True):
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        regra_quinta = st.text_input("Quinta-feira", value=pf.get("regra_quinta","Sem tarde (ENAMED para todos)"))
+        regra_terca = st.text_input("Terça-feira", value=pf.get("regra_terca","Tarde encurtada 12-16h (aula às 16h)"))
+        limite_ch = st.number_input("Limite CH máximo (h/sem)", 20, 60, _clamp(pf.get("limite_ch",40), 20, 60, 40))
+        limite_min = st.number_input("CH mínima alvo (h/sem)", 0, 60, _clamp(pf.get("limite_min",34), 0, 60, 34),
+            help="O sistema completa os turnos até cada aluno chegar perto desta carga (sem passar do máximo).")
+    with col_r2:
+        limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, _clamp(pf.get("limite_abs",43), 20, 60, 43))
+        regra_fds = st.text_area("Regras de plantão FDS", value=pf.get("regra_fds",""), height=80)
+        regras_extras = st.text_area("Outras regras", value=pf.get("regras_extras",""), height=80)
+    st.caption("🔗 A opção de **manter o subgrupo no mesmo serviço por N dias seguidos** agora fica "
+               "**dentro de cada bloco** (Bloco 5), pra você escolher só nos blocos que quiser.")
+
+# BLOCO 4
+with st.expander("📊 Bloco 4 — Formato do Excel", expanded=False):
+    abas_excel = st.multiselect("Abas desejadas",
+        ["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas","Escala por Local","Regras e Restrições"],
+        default=["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas"])
+
+# BLOCO 5
+with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
     pf_locais = pf.get("locais", [])
     num_locais_def = _clamp(pf.get("num_locais", len(pf_locais) if pf_locais else 3), 2, 8, 3)
     num_locais = st.number_input("Número de blocos de rodízio", 2, 8, num_locais_def,
@@ -2260,7 +2283,7 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
             locais.append(srv_principal)
 
 # BLOCO 4 — Rodízio
-with st.expander("🔄 Bloco 4 — Tabela de Rodízio", expanded=True):
+with st.expander("🔄 Bloco 6 — Tabela de Rodízio", expanded=True):
     def gerar_sugestoes(n_sg, n_locais, n_sem, nomes_loc):
         locs = nomes_loc if nomes_loc and all(nomes_loc) else [f"Local{j+1}" for j in range(n_locais)]
         sugestoes = []
@@ -2303,28 +2326,6 @@ with st.expander("🔄 Bloco 4 — Tabela de Rodízio", expanded=True):
     rodizio_desc = st.text_area("Tabela de rodízio (edite à vontade)",
         value=st.session_state.get("rodizio_escolhido", pf.get("rodizio_desc","")),
         height=150, placeholder="Ex:\nPar1 = SG1+SG2: Enf S1-3 → PS S4-5 → Amb S6-8")
-
-# BLOCO 5
-with st.expander("⚙️ Bloco 5 — Regras Especiais", expanded=True):
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        regra_quinta = st.text_input("Quinta-feira", value=pf.get("regra_quinta","Sem tarde (ENAMED para todos)"))
-        regra_terca = st.text_input("Terça-feira", value=pf.get("regra_terca","Tarde encurtada 12-16h (aula às 16h)"))
-        limite_ch = st.number_input("Limite CH máximo (h/sem)", 20, 60, _clamp(pf.get("limite_ch",40), 20, 60, 40))
-        limite_min = st.number_input("CH mínima alvo (h/sem)", 0, 60, _clamp(pf.get("limite_min",34), 0, 60, 34),
-            help="O sistema completa os turnos até cada aluno chegar perto desta carga (sem passar do máximo).")
-    with col_r2:
-        limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, _clamp(pf.get("limite_abs",43), 20, 60, 43))
-        regra_fds = st.text_area("Regras de plantão FDS", value=pf.get("regra_fds",""), height=80)
-        regras_extras = st.text_area("Outras regras", value=pf.get("regras_extras",""), height=80)
-    st.caption("🔗 A opção de **manter o subgrupo no mesmo serviço por N dias seguidos** agora fica "
-               "**dentro de cada bloco** (Bloco 3), pra você escolher só nos blocos que quiser.")
-
-# BLOCO 6
-with st.expander("📊 Bloco 6 — Formato do Excel", expanded=False):
-    abas_excel = st.multiselect("Abas desejadas",
-        ["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas","Escala por Local","Regras e Restrições"],
-        default=["Subgrupos","Calendário de Rodízio","Escala Nominal Detalhada","Resumo de Horas"])
 
 # BLOCO 7 — Salvar / Carregar definições desta escala (reaproveitar depois)
 with st.expander("💾 Bloco 7 — Salvar / Carregar definições desta escala", expanded=False):
