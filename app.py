@@ -314,6 +314,14 @@ def _bloqueios_map(config):
 def _norm(s):
     return str(s or "").strip().lower()
 
+def _clamp(v, lo, hi, default=0):
+    """Garante que o valor caiba em [lo, hi] (evita StreamlitValueAboveMaxError)."""
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        v = int(default)
+    return max(lo, min(v, hi))
+
 def _nome_bate(nomes_set, local_lower):
     """Casa um conjunto de nomes/abreviações de serviço com o nome do local da entrada."""
     if local_lower in nomes_set:
@@ -1536,12 +1544,12 @@ with st.expander("📌 Bloco 1 — Identificação", expanded=True):
         try: data_def = datetime.date.fromisoformat(pf.get("data_inicio",""))
         except: data_def = datetime.date.today()
         data_inicio = st.date_input("Data de início (segunda-feira) *", value=data_def)
-        num_semanas = st.number_input("Número de semanas *", 1, 20, int(pf.get("num_semanas",8)))
+        num_semanas = st.number_input("Número de semanas *", 1, 20, _clamp(pf.get("num_semanas",8), 1, 20, 8))
 
 # BLOCO 2
 with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
     arquivo_alunos = st.file_uploader("Upload Excel de alunos (opcional)", type=["xlsx"])
-    num_sg = st.number_input("Número de subgrupos", 2, 8, int(pf.get("num_sg",6)))
+    num_sg = st.number_input("Número de subgrupos", 2, 8, _clamp(pf.get("num_sg",6), 2, 8, 6))
     alunos_por_sg = {}
 
     # Se importado, mostrar os alunos pré-preenchidos editáveis
@@ -1617,7 +1625,7 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
 # BLOCO 3 — Locais
 with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
     pf_locais = pf.get("locais", [])
-    num_locais_def = int(pf.get("num_locais", len(pf_locais) if pf_locais else 3))
+    num_locais_def = _clamp(pf.get("num_locais", len(pf_locais) if pf_locais else 3), 2, 8, 3)
     num_locais = st.number_input("Número de blocos de rodízio", 2, 8, num_locais_def,
         help="Cada bloco é um local de rodízio que pode conter 1 ou mais serviços vinculados.")
     locais = []
@@ -1690,8 +1698,8 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 tem_m = st.checkbox("Tem manhã?", value=bool(pl_srv.get("manha","07-13h")), key=f"{key_prefix}_tm")
                 if tem_m:
                     hor_m = st.text_input("Horário", value=pl_srv.get("manha","07-13h"), key=f"{key_prefix}_hm")
-                    min_m = st.number_input("Mín/dia", 0, 20, int(pl_srv.get("min_manha",0)), key=f"{key_prefix}_mnm")
-                    max_m = st.number_input("Máx/dia", 0, 20, int(pl_srv.get("max_manha",6)), key=f"{key_prefix}_mxm")
+                    min_m = st.number_input("Mín/dia", 0, 20, _clamp(pl_srv.get("min_manha",0), 0, 20, 0), key=f"{key_prefix}_mnm")
+                    max_m = st.number_input("Máx/dia", 0, 20, _clamp(pl_srv.get("max_manha",6), 0, 20, 6), key=f"{key_prefix}_mxm")
                     # Bloqueios manhã
                     key_bm = f"{key_prefix}_bloqs_m"
                     if key_bm not in st.session_state:
@@ -1722,8 +1730,8 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 tem_t = st.checkbox("Tem tarde?", value=bool(pl_srv.get("tarde","12-18h")), key=f"{key_prefix}_tt")
                 if tem_t:
                     hor_t = st.text_input("Horário normal", value=pl_srv.get("tarde","12-18h"), key=f"{key_prefix}_ht")
-                    min_t = st.number_input("Mín/dia", 0, 20, int(pl_srv.get("min_tarde",3)), key=f"{key_prefix}_mnt")
-                    max_t = st.number_input("Máx/dia", 0, 20, int(pl_srv.get("max_tarde",4)), key=f"{key_prefix}_mxt")
+                    min_t = st.number_input("Mín/dia", 0, 20, _clamp(pl_srv.get("min_tarde",3), 0, 20, 3), key=f"{key_prefix}_mnt")
+                    max_t = st.number_input("Máx/dia", 0, 20, _clamp(pl_srv.get("max_tarde",4), 0, 20, 4), key=f"{key_prefix}_mxt")
                     # Bloqueios tarde
                     key_bt = f"{key_prefix}_bloqs_t"
                     if key_bt not in st.session_state:
@@ -1755,8 +1763,8 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 tem_c = st.checkbox("Tem cinderela?", value=bool(pl_srv.get("cinderela","")), key=f"{key_prefix}_tc")
                 if tem_c:
                     hor_c = st.text_input("Horário", value=pl_srv.get("cinderela","19-23h"), key=f"{key_prefix}_hc")
-                    min_c = st.number_input("Mín/dia", 0, 10, int(pl_srv.get("min_cind",0)), key=f"{key_prefix}_mnc")
-                    max_c = st.number_input("Máx/dia", 0, 10, int(pl_srv.get("max_cind",2)), key=f"{key_prefix}_mxc")
+                    min_c = st.number_input("Mín/dia", 0, 10, _clamp(pl_srv.get("min_cind",0), 0, 10, 0), key=f"{key_prefix}_mnc")
+                    max_c = st.number_input("Máx/dia", 0, 10, _clamp(pl_srv.get("max_cind",2), 0, 10, 2), key=f"{key_prefix}_mxc")
                     dias_c_validos = ["Seg","Ter","Qua","Qui","Sex"]
                     dias_c_def = [d for d in pl_srv.get("dias_cind",["Sex"]) if d in dias_c_validos] or ["Sex"]
                     dias_c = st.multiselect("Dias", dias_c_validos, default=dias_c_def, key=f"{key_prefix}_dc")
@@ -1769,20 +1777,20 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 st.markdown("**🌅 Manhã FDS**")
                 tem_fm = st.checkbox("Tem?", value=bool(pl_srv.get("fds_manha","")), key=f"{key_prefix}_tfm")
                 hor_fm = st.text_input("Horário", value=pl_srv.get("fds_manha","07-12h"), key=f"{key_prefix}_hfm") if tem_fm else ""
-                min_fm = st.number_input("Mín", 0,10,int(pl_srv.get("fds_min_manha",1)), key=f"{key_prefix}_mnfm") if tem_fm else 0
-                max_fm = st.number_input("Máx", 0,10,int(pl_srv.get("fds_max_manha",2)), key=f"{key_prefix}_mxfm") if tem_fm else 0
+                min_fm = st.number_input("Mín", 0,10,_clamp(pl_srv.get("fds_min_manha",1),0,10,1), key=f"{key_prefix}_mnfm") if tem_fm else 0
+                max_fm = st.number_input("Máx", 0,10,_clamp(pl_srv.get("fds_max_manha",2),0,10,2), key=f"{key_prefix}_mxfm") if tem_fm else 0
             with tf2:
                 st.markdown("**🌇 Tarde FDS**")
                 tem_ft = st.checkbox("Tem?", value=bool(pl_srv.get("fds_tarde","")), key=f"{key_prefix}_tft")
                 hor_ft = st.text_input("Horário", value=pl_srv.get("fds_tarde","13-19h"), key=f"{key_prefix}_hft") if tem_ft else ""
-                min_ft = st.number_input("Mín", 0,10,int(pl_srv.get("fds_min_tarde",1)), key=f"{key_prefix}_mnft") if tem_ft else 0
-                max_ft = st.number_input("Máx", 0,10,int(pl_srv.get("fds_max_tarde",2)), key=f"{key_prefix}_mxft") if tem_ft else 0
+                min_ft = st.number_input("Mín", 0,10,_clamp(pl_srv.get("fds_min_tarde",1),0,10,1), key=f"{key_prefix}_mnft") if tem_ft else 0
+                max_ft = st.number_input("Máx", 0,10,_clamp(pl_srv.get("fds_max_tarde",2),0,10,2), key=f"{key_prefix}_mxft") if tem_ft else 0
             with tf3:
                 st.markdown("**🌙 Cinderela FDS**")
                 tem_fc = st.checkbox("Tem?", value=bool(pl_srv.get("fds_cind","")), key=f"{key_prefix}_tfc")
                 hor_fc = st.text_input("Horário", value=pl_srv.get("fds_cind","19-23h"), key=f"{key_prefix}_hfc") if tem_fc else ""
-                min_fc = st.number_input("Mín", 0,10,int(pl_srv.get("fds_min_cind",0)), key=f"{key_prefix}_mnfc") if tem_fc else 0
-                max_fc = st.number_input("Máx", 0,10,int(pl_srv.get("fds_max_cind",2)), key=f"{key_prefix}_mxfc") if tem_fc else 0
+                min_fc = st.number_input("Mín", 0,10,_clamp(pl_srv.get("fds_min_cind",0),0,10,0), key=f"{key_prefix}_mnfc") if tem_fc else 0
+                max_fc = st.number_input("Máx", 0,10,_clamp(pl_srv.get("fds_max_cind",2),0,10,2), key=f"{key_prefix}_mxfc") if tem_fc else 0
 
             quem_fds = st.text_input("Quem faz FDS?", value=pl_srv.get("fds_quem",""), key=f"{key_prefix}_fdsquem")
             comp_fds = st.text_input("Compensação FDS?", value=pl_srv.get("fds_comp",""), key=f"{key_prefix}_fdscomp")
@@ -1861,7 +1869,7 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 sem_por_sg = st.number_input(
                     f"Semanas que cada SG passa neste bloco",
                     min_value=1, max_value=int(num_semanas),
-                    value=int(pl.get("sem_por_sg", default_sem_sg)),
+                    value=_clamp(pl.get("sem_por_sg", default_sem_sg), 1, int(num_semanas), default_sem_sg),
                     key=f"sem_sg_{i}",
                     help=f"Quantas semanas cada SG fica neste bloco (passando por todos os serviços). Ex: {int(num_semanas)} sem ÷ {int(num_locais)} blocos = {default_sem_sg} sem/bloco por SG."
                 )
@@ -1900,7 +1908,7 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                 with cc2:
                     if manter_b:
                         dias_consec_bloco = int(st.number_input("Dias seguidos", 2, 5,
-                            int(pl.get("dias_consec", 3) or 3), key=f"consec_n_{i}"))
+                            _clamp(pl.get("dias_consec", 3) or 3, 2, 5, 3), key=f"consec_n_{i}"))
                 with cc3:
                     if manter_b:
                         idx_def = 0
@@ -2024,11 +2032,11 @@ with st.expander("⚙️ Bloco 5 — Regras Especiais", expanded=True):
     with col_r1:
         regra_quinta = st.text_input("Quinta-feira", value=pf.get("regra_quinta","Sem tarde (ENAMED para todos)"))
         regra_terca = st.text_input("Terça-feira", value=pf.get("regra_terca","Tarde encurtada 12-16h (aula às 16h)"))
-        limite_ch = st.number_input("Limite CH máximo (h/sem)", 20, 60, int(pf.get("limite_ch",40)))
-        limite_min = st.number_input("CH mínima alvo (h/sem)", 0, 60, int(pf.get("limite_min",34)),
+        limite_ch = st.number_input("Limite CH máximo (h/sem)", 20, 60, _clamp(pf.get("limite_ch",40), 20, 60, 40))
+        limite_min = st.number_input("CH mínima alvo (h/sem)", 0, 60, _clamp(pf.get("limite_min",34), 0, 60, 34),
             help="O sistema completa os turnos até cada aluno chegar perto desta carga (sem passar do máximo).")
     with col_r2:
-        limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, int(pf.get("limite_abs",43)))
+        limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, _clamp(pf.get("limite_abs",43), 20, 60, 43))
         regra_fds = st.text_area("Regras de plantão FDS", value=pf.get("regra_fds",""), height=80)
         regras_extras = st.text_area("Outras regras", value=pf.get("regras_extras",""), height=80)
     st.caption("🔗 A opção de **manter o subgrupo no mesmo serviço por N dias seguidos** agora fica "
