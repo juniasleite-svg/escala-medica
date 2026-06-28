@@ -1735,6 +1735,35 @@ def mostrar_resultado(resposta_raw, esp, grupo, turma):
                 file_name=f"Escala_{esp}_{grupo}_{turma}_horas.csv",
                 mime="text/csv", use_container_width=True)
 
+    # Exportar para o Lovable (2 formatos)
+    st.markdown("**📤 Exportar para o Lovable**")
+    cfg_lv = dict(st.session_state.get("config_atual", {}))
+    cfg_lv.update({"especialidade": esp, "grupo": grupo, "turma": turma})
+    _slug_lv = _re_val.sub(r"[^A-Za-z0-9]+", "_", f"{esp}_{turma}").strip("_") or "rodizio"
+    colL1, colL2 = st.columns(2)
+    try:
+        from exportar_lovable import gerar_template_lovable, gerar_correcao_lovable
+        with colL1:
+            st.download_button(
+                "🗂️ Arquivo 1 — Estrutura (blocos, semana padrão, rodízio, subgrupos)",
+                data=gerar_template_lovable(dados, cfg_lv),
+                file_name=f"template_{_slug_lv}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                help="Como funciona: blocos, semana padrão, rodízio e divisão dos subgrupos. "
+                     "Abas: Semana Padrão · Distribuição · _Serviços · _Blocos · _Subgrupos · LEIA-ME.")
+        with colL2:
+            st.download_button(
+                "📥 Arquivo 2 — Importar no Lovable (escala dia a dia)",
+                data=gerar_correcao_lovable(dados, cfg_lv),
+                file_name=f"importar_lovable_{_slug_lv}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                help="No formato exato de importação do Lovable: 1 linha por aluno × dia "
+                     "(manhã/tarde/noite, com Área Verde nos períodos livres de dia útil).")
+    except Exception as e:
+        st.warning(f"Erro ao gerar os arquivos do Lovable: {e}")
+
     # Correção
     st.divider()
     with st.expander("🔁 Solicitar correção à IA"):
