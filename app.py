@@ -1066,6 +1066,27 @@ def gerar_detalhada_python(calendario, config):
             def _ordem(tk):
                 return lambda x: (g_tcount.get(x, {}).get(tk, 0), horas_aluno[x])
 
+            # Preferência SUAVE por períodos consecutivos: quem já está de manhã no MESMO serviço/dia
+            # tem leve preferência p/ a tarde; quem está de tarde, p/ a cinderela/noite. É só desempate
+            # (entra DEPOIS do equilíbrio de turnos), então não atropela regras mais importantes.
+            def _consec_pref(n, idx):
+                tk = slots[idx][3]
+                if tk == "tarde":
+                    prev = "manha"
+                elif tk == "cind":
+                    prev = "tarde"
+                else:
+                    return 0
+                dia = slots[idx][1]; si = slot_svc[idx]
+                for jx in range(len(slots)):
+                    if (slot_svc[jx] == si and slots[jx][1] == dia
+                            and slots[jx][3] == prev and n in assigned[jx]):
+                        return 0   # tem o período anterior no mesmo serviço/dia → preferido
+                return 1
+
+            def _ordem_ctx(idx, tk):
+                return lambda x: (g_tcount.get(x, {}).get(tk, 0), _consec_pref(x, idx), horas_aluno[x])
+
             def _eh_fds_dia(d):
                 return d in ("Sáb", "Sab", "Dom")
 
@@ -1088,7 +1109,7 @@ def gerar_detalhada_python(calendario, config):
             for idx in ordem_fase1:
                 (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) = slots[idx]
                 for cap in (limite, limite_abs):
-                    for n in sorted(nomes, key=_ordem(tk)):
+                    for n in sorted(nomes, key=_ordem_ctx(idx, tk)):
                         if len(assigned[idx]) >= qmin:
                             break
                         if _cabe(n, idx, hrs, dia3, tk, cap):
@@ -1110,7 +1131,7 @@ def gerar_detalhada_python(calendario, config):
                                  and _cabe(n, idx, hrs, dia3, tk, limite)]
                         if not cands:
                             break
-                        n = min(cands, key=_ordem(tk))
+                        n = min(cands, key=_ordem_ctx(idx, tk))
                         _por(n, idx, hrs, dia3, tk)
                         progresso = True
 
@@ -1156,6 +1177,43 @@ def gerar_detalhada_python(calendario, config):
                      ("manha" if servs_bloco[_si2].get("priorizar_manha") else "")
                 if _p in ("manha", "tarde"):
                     _prio_por_si[_si2] = _p
+
+            # ── Equilíbrio por DIA (geral): evita amontoar alunos num dia (ex.: 6 na segunda)
+            # e deixar outro no mínimo (ex.: 3 na sexta). Move do dia mais cheio para o mais
+            # vazio dentro do MESMO serviço/turno, só nos dias úteis, mantendo o mínimo da origem
+            # e o máximo do destino. CH não muda (mesmo turno/horas) — move-se primeiro p/ liberar
+            # as horas e o _cabe avaliar o destino corretamente.
+            for _si2 in range(len(servs_bloco)):
+                if usa_continuidade and _si2 == cont_idx:
+                    continue   # não mexe no serviço de continuidade (quebraria a sequência)
+                for _tkb in ("manha", "tarde", "cind"):
+                    if _prio_por_si.get(_si2) == _tkb:
+                        continue   # período prioritário tem balanceamento próprio (abaixo)
+                    _idxs = [ix for ix in range(len(slots))
+                             if slot_svc[ix] == _si2 and slots[ix][3] == _tkb
+                             and not _eh_fds_dia(slots[ix][1])]
+                    if len(_idxs) < 2:
+                        continue
+                    for _ in range(120):
+                        _idxs.sort(key=lambda ix: len(assigned[ix]))
+                        _dst, _src = _idxs[0], _idxs[-1]
+                        if len(assigned[_src]) - len(assigned[_dst]) <= 1:
+                            break
+                        if len(assigned[_src]) <= (slots[_src][6] or 0):   # não derruba o mínimo da origem
+                            break
+                        _qmx = slots[_dst][7]
+                        if _qmx is not None and len(assigned[_dst]) >= _qmx:
+                            break
+                        _moved = False
+                        for _n in list(assigned[_src]):
+                            _tirar(_n, _src, slots[_src][5], slots[_src][1], _tkb)
+                            if _cabe(_n, _dst, slots[_dst][5], slots[_dst][1], _tkb, limite, respeitar_cont=False):
+                                _por(_n, _dst, slots[_dst][5], slots[_dst][1], _tkb)
+                                _moved = True
+                                break
+                            _por(_n, _src, slots[_src][5], slots[_src][1], _tkb)   # desfaz
+                        if not _moved:
+                            break
 
             # (1) equilibra o período prioritário entre os dias (move dos dias mais cheios p/ os mais vazios)
             for _si2, _p in _prio_por_si.items():

@@ -498,8 +498,12 @@ def gerar_correcao_lovable(dados, config):
                     atual = serv or None
                     if serv:
                         correto = serv
+                    elif eh_fds or tk == "cind":
+                        # FDS livre, ou período noturno sem plantão: vazio (NÃO é área verde —
+                        # área verde é período de DIA ÚTIL livre, só manhã/tarde)
+                        correto = None
                     else:
-                        correto = None if eh_fds else "ÁREA VERDE"
+                        correto = "ÁREA VERDE"
                     cel[col + "_atual"] = atual
                     cel[col + "_correto"] = correto
                 ws.append([dt.strftime("%Y-%m-%d"), dia_long, sgn, ra, nome,

@@ -172,6 +172,30 @@ def gerar_excel_completo(dados, config):
             else:
                 escala_por_aluno[nome][data_str] = valor
 
+    # Índice por PERÍODO (M/T/C) — usado pela Escala Individual para mostrar a Área Verde
+    # explicitamente no período de dia útil em que o aluno está livre.
+    def _bucket_periodo(turno):
+        t = (turno or "").lower()
+        if "cind" in t or "noit" in t or "noturn" in t:
+            return "C"
+        if "tard" in t or "reduz" in t:
+            return "T"
+        return "M"
+    escala_por_aluno_per = {}   # nome -> {data_str -> {"M":info, "T":info, "C":info}}
+    for entry in escala_det:
+        alunos = entry.get("alunos", [])
+        if isinstance(entry.get("nome"), str) and entry.get("nome"):
+            alunos = [entry["nome"]]
+        data_str = _normalizar_data(str(entry.get("data","")), ano_escala)
+        turno = entry.get("turno","")
+        local = entry.get("local","")
+        b = _bucket_periodo(turno)
+        info = {"abrev": _abrev_local(local, locais_cfg), "local": local,
+                "plantao": bool(entry.get("plantao")),
+                "reduz": ("reduz" in turno.lower() or "12-16" in str(entry.get("horario","")))}
+        for nome in alunos:
+            escala_por_aluno_per.setdefault(nome, {}).setdefault(data_str, {})[b] = info
+
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -182,7 +206,7 @@ def gerar_excel_completo(dados, config):
     _aba_resumo_horas(wb, titulo, dados.get("resumo_horas",[]), config, semanas, locais_cfg, dados)
     _aba_regras(wb, titulo, config, dados)
     _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, semanas, locais_cfg)
-    _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, semanas, locais_cfg)
+    _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno_per, config, semanas, locais_cfg)
     _aba_por_servico(wb, titulo, escala_det, config, semanas, locais_cfg, ano_escala)
 
     out = io.BytesIO()
@@ -847,45 +871,53 @@ def _aba_escala_subgrupo(wb, titulo, alunos_por_sg, escala_por_aluno, config, se
             row += 1
 
 
-# ── ABA 8: ESCALA INDIVIDUAL ──────────────────────────────────────────────────
-def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, semanas, locais_cfg):
+# ── ABA 8: ESCALA INDIVIDUAL (sub-colunas M/T/C por dia) ──────────────────────
+def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno_per, config, semanas, locais_cfg):
     ws = wb.create_sheet("Escala Individual")
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "D4"
 
     grupo = config.get("grupo","")
     turma = config.get("turma","")
     d_ini = semanas[0][0].strftime("%d/%m/%Y") if semanas else ""
     d_fim = semanas[-1][-1].strftime("%d/%m/%Y") if semanas else ""
 
-    _header(ws, 1, 1, f"ESCALA INDIVIDUAL — {grupo} / {turma}  |  {d_ini}–{d_fim}  |  rodízio equilibrado",
-            span=60, sz=11)
-    _header(ws, 2, 1, "M=Manhã · T=Tarde · R=Tarde12-16h · F=FDS manhã · ★=Plantão de complemento (outro serviço)",
-            span=60, bg=C["H2"], sz=9)
+    _header(ws, 1, 1, f"ESCALA INDIVIDUAL — {grupo} / {turma}  |  {d_ini}–{d_fim}  |  por período (M/T/C)",
+            span=80, sz=11)
+    _header(ws, 2, 1, "M=Manhã · T=Tarde · C=Cinderela/Noturno · ★=Plantão  |  'Área Verde' = período de DIA ÚTIL livre "
+                      "(obrigatório ≥1 por semana)", span=80, bg=C["H2"], sz=9)
 
-    # Montar todas as datas
     todas_datas = []
     for sem in semanas:
         todas_datas.extend(sem)
     n_datas = len(todas_datas)
 
-    ws.column_dimensions["A"].width = 36
+    ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 5
     ws.column_dimensions["C"].width = 12
-    for i in range(n_datas):
-        ws.column_dimensions[get_column_letter(4+i)].width = 9
+    for i in range(n_datas * 3):
+        ws.column_dimensions[get_column_letter(4 + i)].width = 8
 
-    # Linha 3: headers
-    for ci, h in enumerate(["Nome","SG","RA"],1):
+    # Linha 3: Nome/SG/RA (mesclados 3-4) + data (mesclada nas 3 sub-colunas).  Linha 4: M/T/C
+    for ci, h in enumerate(["Nome", "SG", "RA"], 1):
         _cel(ws, 3, ci, h, bold=True, bg=C["H1"], fc="FFFFFF", sz=9)
+        _cel(ws, 4, ci, "", bg=C["H1"])
+        ws.merge_cells(start_row=3, start_column=ci, end_row=4, end_column=ci)
     for i, dt in enumerate(todas_datas):
         eh_fds = dt.weekday() >= 5
         bg = C["FDS"] if eh_fds else C["H3"]
-        _cel(ws, 3, 4+i, dt.strftime("%d/%m"), bold=True, bg=bg, sz=8)
-    ws.row_dimensions[3].height = 16
+        c0 = 4 + i * 3
+        _cel(ws, 3, c0, dt.strftime("%d/%m"), bold=True, bg=bg, sz=8)
+        for _cc in (c0 + 1, c0 + 2):
+            _cel(ws, 3, _cc, "", bg=bg)
+        ws.merge_cells(start_row=3, start_column=c0, end_row=3, end_column=c0 + 2)
+        for j, lbl in enumerate(["M", "T", "C"]):
+            _cel(ws, 4, c0 + j, lbl, bold=True, bg=bg, sz=7)
+    ws.row_dimensions[3].height = 15
+    ws.row_dimensions[4].height = 13
+    ws.freeze_panes = "D5"
 
     ra_map = config.get("ra_por_aluno", {}) or {}
-    row = 4
+    row = 5
     for sg_key in sorted(alunos_por_sg.keys(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
         sg_num = int(sg_key) if sg_key.isdigit() else 1
         cor_sg = _cor_sg(sg_num)
@@ -894,32 +926,32 @@ def _aba_escala_individual(wb, titulo, alunos_por_sg, escala_por_aluno, config, 
             cor_nome = C["ALT1"] if i_al % 2 == 0 else C["ALT2"]
             _cel(ws, row, 1, nome, halign="left", bg=cor_sg, bold=True, sz=9)
             _cel(ws, row, 2, f"SG{sg_num}", bold=True, bg=cor_sg, sz=9)
-            _cel(ws, row, 3, str(ra_map.get(str(nome).strip(), "")), bg=cor_nome, sz=9)  # RA
+            _cel(ws, row, 3, str(ra_map.get(str(nome).strip(), "")), bg=cor_nome, sz=9)
 
+            dd = escala_por_aluno_per.get(nome, {})
             for i, dt in enumerate(todas_datas):
-                data_str = dt.strftime("%d/%m/%Y")
-                data_str2 = dt.strftime("%d/%m")
-                data_str3 = dt.strftime("%Y-%m-%d")
-                aluno_datas = escala_por_aluno.get(nome, {})
-                valor = (aluno_datas.get(data_str) or
-                         aluno_datas.get(data_str2) or
-                         aluno_datas.get(data_str3) or "")
+                per = (dd.get(dt.strftime("%d/%m/%Y")) or dd.get(dt.strftime("%d/%m"))
+                       or dd.get(dt.strftime("%Y-%m-%d")) or {})
                 eh_fds = dt.weekday() >= 5
-
-                if not valor:
-                    if eh_fds:
-                        valor = "—"; cor_cel = C["FDS_CELL"]
+                c0 = 4 + i * 3
+                for j, b in enumerate(["M", "T", "C"]):
+                    info = per.get(b)
+                    if info:
+                        txt = ("★" if info["plantao"] else "") + info["abrev"]
+                        cor_cel = _cor_local(info["local"], locais_cfg)
+                        if info["plantao"]:
+                            cor_cel = C["FDS_PLT"]
+                        elif info["reduz"]:
+                            cor_cel = C["TARDE_R"]
+                    elif b == "C":                       # noite/cinderela vazio NÃO é área verde
+                        txt = ""; cor_cel = C["FDS_CELL"] if eh_fds else C["CIND"]
+                    elif eh_fds:
+                        txt = "—"; cor_cel = C["FDS_CELL"]
                     else:
-                        valor = "Área Verde"; cor_cel = C["VERDE"]  # dia útil sem turno
-                else:
-                    local_nome = valor.split("(")[0] if "(" in valor else valor
-                    cor_cel = _cor_local(local_nome, locais_cfg)
-                    if "FDS" in valor or "★" in valor: cor_cel = C["FDS_PLT"]
-                    elif "(R)" in valor or "+R" in valor: cor_cel = C["TARDE_R"]
+                        txt = "Área Verde"; cor_cel = C["VERDE"]   # manhã/tarde de dia útil livre
+                    _cel(ws, row, c0 + j, txt, bg=cor_cel, sz=7)
 
-                _cel(ws, row, 4+i, valor, bg=cor_cel, sz=7)
-
-            ws.row_dimensions[row].height = 14
+            ws.row_dimensions[row].height = 13
             row += 1
 
 # v2 - formato CM5 exato
