@@ -274,14 +274,12 @@ def _horas_entrada(e):
             return h
     except (TypeError, ValueError):
         pass
-    nums = _re_val.findall(r"(\d{1,2})", str(e.get("horario", "")))
-    if len(nums) >= 2:
-        try:
-            ini, fim = int(nums[0]), int(nums[1])
-            if fim > ini:
-                return float(fim - ini)
-        except ValueError:
-            pass
+    partes = str(e.get("horario", "")).split("-")
+    if len(partes) >= 2:
+        a = _hhmm_para_horas(partes[0])
+        b = _hhmm_para_horas(partes[1])
+        if a is not None and b is not None and b > a:
+            return float(b - a)
     return {"manha": 6.0, "tarde": 6.0, "cind": 4.0, "fds": 6.0}.get(_turno_key(e.get("turno")), 0.0)
 
 def _alunos_entrada(e):
@@ -517,6 +515,8 @@ def validar_escala(dados, config):
         rotulos_bloco.append(rot)
     alunos_bs = _dd(set)  # (bidx, semana) -> alunos distintos
     for e in det:
+        if e.get("plantao"):      # plantões de complemento não contam como "cohorte" do bloco
+            continue
         loc = _norm(e.get("local", ""))
         sem = e.get("semana", "?")
         bidx = next((bi for bi, rot in enumerate(rotulos_bloco)
@@ -525,6 +525,7 @@ def validar_escala(dados, config):
             continue
         for al in _alunos_entrada(e):
             alunos_bs[(bidx, sem)].add(al)
+    plantoes_complemento = sum(1 for e in det if e.get("plantao"))
     sobrecarga_bloco = []
     for (bidx, sem), als in alunos_bs.items():
         n = len(als)
@@ -545,7 +546,7 @@ def validar_escala(dados, config):
         "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
         "desvios": desvios, "ausentes": ausentes, "subcarga": subcarga,
         "nao_passou": nao_passou, "pct_servico": pct_servico, "locais_lista": locais_lista,
-        "sobrecarga_bloco": sobrecarga_bloco,
+        "sobrecarga_bloco": sobrecarga_bloco, "plantoes_complemento": plantoes_complemento,
         "limite": limite, "limite_abs": limite_abs, "alvo_min": alvo_min,
         "ok": (not estouros and not conflitos and not desvios and not ausentes),
         "semanas_ruins": semanas_ruins,
@@ -755,11 +756,22 @@ def gerar_detalhada_por_semana(briefing, calendario_json, alunos_por_sg, config,
     return todas
 
 # ── Gerador DETERMINÍSTICO da escala detalhada (Python, sem IA) ───────────────
+def _hhmm_para_horas(p):
+    """Converte um lado do horário ('07', '07:30', '7h', '13h00') em horas decimais."""
+    m = _re_val.findall(r"\d{1,2}", str(p or ""))
+    if not m:
+        return None
+    h = int(m[0])
+    mn = int(m[1]) if len(m) > 1 else 0
+    return h + mn / 60.0
+
 def _dur_horario(horario, turno_key=""):
-    nums = _re_val.findall(r"(\d{1,2})", str(horario or ""))
-    if len(nums) >= 2:
-        a, b = int(nums[0]), int(nums[1])
-        if b > a:
+    # aceita '07-13h', '07:00-12:00', '07:30-12:00', '13h-19h' etc. (lê hora E minutos)
+    partes = str(horario or "").split("-")
+    if len(partes) >= 2:
+        a = _hhmm_para_horas(partes[0])
+        b = _hhmm_para_horas(partes[1])
+        if a is not None and b is not None and b > a:
             return float(b - a)
     return {"manha": 6.0, "tarde": 6.0, "cind": 4.0}.get(turno_key, 6.0)
 
@@ -901,6 +913,10 @@ def gerar_detalhada_python(calendario, config):
 
     detalhada = []
     g_tcount = {}  # contagem GLOBAL por aluno e tipo de turno (equilíbrio ao longo do semestre)
+    sg_de_aluno = {}
+    for _sg, _nomes_sg in alunos_por_sg.items():
+        for _n in _nomes_sg:
+            sg_de_aluno[_n] = _sg
     for w in range(1, num_sem + 1):
         base = d0 + timedelta(weeks=w - 1)
         datas = [base + timedelta(days=i) for i in range(7)]
@@ -1069,6 +1085,101 @@ def gerar_detalhada_python(calendario, config):
                     "sg": "+".join(sorted({sg_de[n] for n in ch}, key=lambda x: int(x) if x.isdigit() else 99)),
                     "alunos": ch,
                 })
+
+        # ── Complemento de CH: plantões em OUTRO serviço (ex.: Ambulatório → plantão no PA) ──
+        # Para alunos de um bloco que não fecha a CH alvo, adiciona plantões em vagas LIVRES de
+        # outro serviço, SEMPRE respeitando o máximo de alunos por turno/dia do serviço de destino.
+        blocos_comp = [bb for bb in blocos if bb["loc"].get("complemento_ativo")]
+        if blocos_comp:
+            ent_sem = [e for e in detalhada if e.get("semana") == w]
+            ha = {}                       # horas por aluno nesta semana
+            occ = {}                      # (dia3, tk) -> set(alunos ocupados)
+            for e in ent_sem:
+                tkk = _turno_key(e.get("turno"))
+                for al in e.get("alunos", []):
+                    ha[al] = ha.get(al, 0.0) + _horas_entrada(e)
+                    occ.setdefault((e.get("dia"), tkk), set()).add(al)
+
+            def _rotulos(s):
+                return {_norm(s.get("nome")), _norm(s.get("abrev"))} - {""}
+
+            def _serv_por_nome(nome):
+                a = _norm(nome)
+                for bb in blocos:
+                    for s in bb["servs"]:
+                        rot = _rotulos(s)
+                        if any(r and (r == a or r in a or a in r) for r in rot):
+                            return s
+                return None
+
+            def _occ_serv(s, d3, tkk):  # nº de alunos já nesse serviço/dia/turno (respeitar máx)
+                rot = _rotulos(s)
+                c = 0
+                for e in ent_sem:
+                    if e.get("dia") != d3 or _turno_key(e.get("turno")) != tkk:
+                        continue
+                    ln = _norm(e.get("local"))
+                    if any(r and (r in ln or ln in r) for r in rot):
+                        c += len(e.get("alunos", []))
+                return c
+
+            for b2 in blocos_comp:
+                rot_b2 = {_norm(b2["nome"])}
+                for s in b2["servs"]:
+                    rot_b2 |= _rotulos(s)
+                alunos_b2 = set()
+                for e in ent_sem:
+                    if e.get("plantao"):
+                        continue
+                    ln = _norm(e.get("local"))
+                    if any(r and (r in ln or ln in r) for r in rot_b2):
+                        alunos_b2.update(e.get("alunos", []))
+                if not alunos_b2:
+                    continue
+                # serviços-alvo: manual = o escolhido; auto (IA) = todos os de OUTROS blocos
+                modo = b2["loc"].get("complemento_modo", "auto")
+                alvos = []
+                if modo == "manual" and b2["loc"].get("complemento_servico"):
+                    sa = _serv_por_nome(b2["loc"]["complemento_servico"])
+                    if sa is not None:
+                        alvos = [sa]
+                else:
+                    for bb in blocos:
+                        if bb is b2:
+                            continue
+                        alvos += bb["servs"]
+                slots_alvo = []
+                for sa in alvos:
+                    for sl in _slots_servico(sa, datas):
+                        slots_alvo.append((sa,) + tuple(sl))
+                for al in sorted(alunos_b2, key=lambda x: ha.get(x, 0)):
+                    # turnos já ocupados por dia (p/ ESPALHAR os plantões e evitar dia sobrecarregado)
+                    day_load = {}
+                    for (d3, _tk2), s_al in occ.items():
+                        if al in s_al:
+                            day_load[d3] = day_load.get(d3, 0) + 1
+                    # prioriza os dias mais leves do aluno
+                    ordenados = sorted(slots_alvo, key=lambda sl: day_load.get(sl[2], 0))
+                    for (sa, data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in ordenados:
+                        if ha.get(al, 0) >= alvo_min:
+                            break
+                        if al in occ.get((dia3, tk), set()):
+                            continue
+                        if day_load.get(dia3, 0) >= 2:   # no máx 2 turnos/dia (evita dia de 14h+)
+                            continue
+                        if ha.get(al, 0) + hrs > limite:
+                            continue
+                        teto = qmax if qmax is not None else 99
+                        if _occ_serv(sa, dia3, tk) >= teto:   # RESPEITA o máximo de alunos/turno
+                            continue
+                        occ.setdefault((dia3, tk), set()).add(al)
+                        day_load[dia3] = day_load.get(dia3, 0) + 1
+                        ha[al] = ha.get(al, 0) + hrs
+                        ent = {"semana": w, "data": data.strftime("%d/%m"), "dia": dia3,
+                               "local": locn, "turno": tn, "horario": hor, "horas": hrs,
+                               "sg": sg_de_aluno.get(al, ""), "alunos": [al], "plantao": True}
+                        detalhada.append(ent)
+                        ent_sem.append(ent)
     detalhada.sort(key=lambda e: (e["semana"], e["data"], e["local"], e["turno"]))
     return detalhada
 
@@ -1150,6 +1261,9 @@ def mostrar_validacao(val):
         st.caption("💡 **Esta é a causa da CH baixa.** No rodízio (Bloco 4), evite colocar tantos subgrupos no "
                    "mesmo bloco na mesma semana — distribua-os por outros blocos. Ou aumente a capacidade do "
                    "bloco (mais turnos/serviços ou maior máx/dia).")
+    if val.get("plantoes_complemento"):
+        st.info(f"🩺 **{val['plantoes_complemento']} plantão(ões) de complemento** adicionados em outro serviço "
+                f"para completar a carga horária — respeitando o **máximo de alunos por turno/dia** do serviço de destino.")
     if val.get("subcarga"):
         alvo = val.get("alvo_min", 34)
         st.warning(f"⏬ **{len(val['subcarga'])} aluno(s)/semana ABAIXO da CH mínima alvo ({alvo}h):**")
@@ -1157,8 +1271,10 @@ def mostrar_validacao(val):
             st.markdown(f"- **{sgc['aluno']}** — semana {sgc['semana']}: só **{sgc['horas']}h** (alvo {alvo}h)")
         if len(val["subcarga"]) > 20:
             st.caption(f"...e mais {len(val['subcarga']) - 20}")
-        st.caption("💡 Para subir a CH: ative mais turnos no bloco (ex: cinderela no PA), aumente o máx/dia "
-                   "dos turnos, ou reduza a CH mínima alvo no Bloco 5.")
+        st.caption("💡 Para subir a CH: ative o **complemento com plantões em outro serviço** (Bloco 3), "
+                   "ative mais turnos no bloco (ex: cinderela), aumente o máx/dia dos turnos, "
+                   "ou reduza a CH mínima alvo no Bloco 5. Se já usa complemento e ainda falta, "
+                   "o serviço de destino atingiu o **máximo de alunos** — aumente o máx/dia dele.")
 
 # ── Mostrar resultado ────────────────────────────────────────────────────────
 def mostrar_resultado(resposta_raw, esp, grupo, turma):
@@ -1795,6 +1911,43 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                             "Em qual serviço?", nomes_srv_bloco, index=idx_def, key=f"consec_srv_{i}",
                             help="Serviço onde os mesmos alunos ficam fixos pelos dias seguidos (ex: Enfermaria).")
 
+            # 🩺 Complemento de CH: plantões em OUTRO serviço (ex.: Ambulatório → plantão no PA)
+            comp_ativo = st.checkbox(
+                "🩺 Completar a CH deste bloco com PLANTÕES em outro serviço",
+                value=bool(pl.get("complemento_ativo")), key=f"comp_chk_{i}",
+                help="Para blocos que sozinhos não fecham a CH (ex: Ambulatório). Os alunos deste bloco "
+                     "ganham plantões em outro serviço (ex: PA) até chegar perto da CH alvo — sempre "
+                     "respeitando o máximo de alunos por turno/dia do serviço de destino.")
+            comp_modo_bloco = "auto"
+            comp_servico_bloco = ""
+            if comp_ativo:
+                # serviços de OUTROS blocos já configurados (acima deste)
+                servicos_outros = []
+                for lc_prev in locais:
+                    for s_prev in [lc_prev] + (lc_prev.get("servicos_extras") or []):
+                        nm_prev = s_prev.get("nome")
+                        if nm_prev and nm_prev not in servicos_outros:
+                            servicos_outros.append(nm_prev)
+                escolha = st.radio(
+                    "Como escolher o serviço do plantão?",
+                    ["Deixar a IA definir (serviço com vaga)", "Definir manualmente"],
+                    index=(1 if pl.get("complemento_servico") else 0),
+                    key=f"comp_modo_{i}", horizontal=True)
+                if escolha.startswith("Definir"):
+                    comp_modo_bloco = "manual"
+                    if servicos_outros:
+                        idx_cs = servicos_outros.index(pl["complemento_servico"]) if pl.get("complemento_servico") in servicos_outros else 0
+                        comp_servico_bloco = st.selectbox(
+                            "Serviço do plantão (de outro bloco)", servicos_outros, index=idx_cs,
+                            key=f"comp_serv_{i}")
+                    else:
+                        comp_servico_bloco = st.text_input(
+                            "Serviço do plantão (digite o nome exato, ex: PA mandic)",
+                            value=pl.get("complemento_servico",""), key=f"comp_serv_txt_{i}")
+                        st.caption("💡 Configure o bloco do PA ANTES deste para escolher na lista.")
+                st.caption("⚠️ O sistema **respeita o máximo de alunos por turno/dia** do serviço de destino "
+                           "e **avisa** (na validação) se não houver vaga suficiente para todos atingirem a CH.")
+
             # Gerar duracao_sgs automaticamente
             duracao_sgs_bloco = {str(sg+1): int(sem_por_sg) for sg in range(n_sgs_total)}
 
@@ -1804,6 +1957,9 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
             srv_principal["sgs_por_servico"] = sgs_por_srv
             srv_principal["dias_consec"] = dias_consec_bloco
             srv_principal["consec_servico"] = consec_servico_bloco
+            srv_principal["complemento_ativo"] = bool(comp_ativo)
+            srv_principal["complemento_modo"] = comp_modo_bloco
+            srv_principal["complemento_servico"] = comp_servico_bloco
             for srv_e in srv_extras:
                 srv_e["duracao_por_sg"] = duracao_sgs_bloco
                 srv_e["sem_por_sg"] = int(sem_por_sg)
