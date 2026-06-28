@@ -83,10 +83,52 @@ def _datas(data_inicio, num_semanas):
     return [[d0 + timedelta(weeks=s, days=d) for d in range(7)] for s in range(int(num_semanas))]
 
 
+# Calendário de rodízios do internato (T6 / 5º ano 2026.2). Comparação por (mês, dia).
+_RODIZIOS = [
+    (1, (7, 6),  (8, 30)),
+    (2, (8, 31), (10, 25)),
+    (3, (10, 26), (12, 20)),
+    (4, (1, 4),  (2, 28)),
+    (5, (3, 1),  (4, 25)),
+    (6, (4, 26), (6, 20)),
+]
+
+# Códigos curtos de especialidade usados no código do rodízio (ex.: R1-PED-T6).
+_ESP_COD = {
+    "pediatria": "PED",
+    "clinica medica": "CM", "clinica cirurgica": "CIR",
+    "ginecologia e obstetricia": "GO", "ginecologia": "GO", "obstetricia": "GO",
+    "saude mental": "SM", "saude mental + ferias": "SM",
+    "medicina de familia e comunidade": "MFC", "mfc": "MFC",
+}
+
+
+def _num_rodizio(data_inicio):
+    """Número do rodízio (1..6) a partir da data de início, conforme o calendário do internato."""
+    try:
+        d = date.fromisoformat(str(data_inicio)[:10])
+    except Exception:
+        return None
+    md = (d.month, d.day)
+    for n, ini, fim in _RODIZIOS:
+        if ini <= md <= fim:
+            return n
+    return None
+
+
+def _esp_cod(esp):
+    e = _sa(esp)
+    if e in _ESP_COD:
+        return _ESP_COD[e]
+    return next((v for k, v in _ESP_COD.items() if k in e or e in k), e.upper()[:3] or "ESC")
+
+
 def _rod_codigo(config):
-    esp = _sa(config.get("especialidade", "")).upper()[:3] or "ESC"
+    esp = _esp_cod(config.get("especialidade", ""))
     turma = str(config.get("turma", "") or "").upper().replace(" ", "")
-    return f"{esp}-{turma}".strip("-") or "RODIZIO"
+    n = _num_rodizio(config.get("data_inicio"))
+    pref = f"R{n}-" if n else ""
+    return f"{pref}{esp}-{turma}".strip("-") or "RODIZIO"
 
 
 # ───────────────────────────── ARQUIVO 1: TEMPLATE ─────────────────────────────
