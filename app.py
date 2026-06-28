@@ -355,6 +355,7 @@ def validar_escala(dados, config):
     reg = config.get("regras_especiais", {})
     limite = int(reg.get("limite_ch", 40))
     limite_abs = int(reg.get("limite_abs", 43))
+    alvo_min = int(reg.get("limite_min", 34))
     regra_quinta = str(reg.get("quinta", "")).lower()
 
     horas = _dd(float)   # (aluno, semana) -> horas
@@ -376,12 +377,16 @@ def validar_escala(dados, config):
         qtd[(local, turno, sem, dia)] += len(als)
 
     estouros = []
+    subcarga = []
     for (al, sem), h in horas.items():
         if h > limite_abs:
             estouros.append({"aluno": al, "semana": sem, "horas": round(h, 1), "limite": limite_abs, "nivel": "absoluto"})
         elif h > limite:
             estouros.append({"aluno": al, "semana": sem, "horas": round(h, 1), "limite": limite, "nivel": "padrao"})
+        elif h < alvo_min:
+            subcarga.append({"aluno": al, "semana": sem, "horas": round(h, 1), "alvo": alvo_min})
     estouros.sort(key=lambda x: -x["horas"])
+    subcarga.sort(key=lambda x: x["horas"])
 
     conflitos = []
     for (al, sem, dia, turno), locs in ocup.items():
@@ -446,8 +451,8 @@ def validar_escala(dados, config):
         key=lambda x: int(x) if str(x).isdigit() else 999)
     return {
         "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
-        "desvios": desvios, "ausentes": ausentes,
-        "limite": limite, "limite_abs": limite_abs,
+        "desvios": desvios, "ausentes": ausentes, "subcarga": subcarga,
+        "limite": limite, "limite_abs": limite_abs, "alvo_min": alvo_min,
         "ok": (not estouros and not conflitos and not desvios and not ausentes),
         "semanas_ruins": semanas_ruins,
     }
@@ -671,6 +676,7 @@ def gerar_detalhada_python(calendario, config):
     reg = config.get("regras_especiais", {})
     limite = int(reg.get("limite_ch", 40))
     limite_abs = int(reg.get("limite_abs", 43))
+    alvo_min = int(reg.get("limite_min", 34))   # CH mínima alvo (completa até aqui se possível)
     regra_quinta = str(reg.get("quinta", "")).lower()
     alunos_por_sg = config.get("alunos_por_sg", {})
     num_sem = int(config.get("num_semanas", 8))
@@ -707,7 +713,7 @@ def gerar_detalhada_python(calendario, config):
             continue
 
     def _slots_servico(s, datas):
-        """Lista de (data, dia3, turno_nome, turno_key, horario, horas, qtd) do serviço na semana."""
+        """Lista de (data, dia3, turno_nome, turno_key, horario, horas, qmin, qmax, local) do serviço."""
         bloq = set()
         for bm in (s.get("bloqueios_manha") or []):
             if str(bm.get("tipo", "")).lower().startswith("sem"):
@@ -717,46 +723,50 @@ def gerar_detalhada_python(calendario, config):
                 bloq.add(("tarde", _dia_curto(bt.get("dia"))))
 
         def _cnt(mn, mx):
-            c = mn if mn and mn >= 1 else 1
-            if mx not in (None, "", 0):
-                try: c = min(c, int(mx))
-                except (TypeError, ValueError): pass
-            return max(c, 1)
+            qmin = max(int(mn) if mn else 0, 1)   # todo turno presente cobre pelo menos 1
+            try:
+                qmax = int(mx) if mx not in (None, "", 0) else None
+            except (TypeError, ValueError):
+                qmax = None
+            if qmax is not None and qmax < qmin:
+                qmax = qmin
+            return qmin, qmax
 
+        locn = s.get("nome") or s.get("abrev") or ""
         uteis = []
         if s.get("manha"):
-            uteis.append(("Manhã", "manha", s.get("manha"), _dur_horario(s.get("manha"), "manha"),
-                          _cnt(int(s.get("min_manha") or 0), s.get("max_manha")), None))
+            qn, qx = _cnt(int(s.get("min_manha") or 0), s.get("max_manha"))
+            uteis.append(("Manhã", "manha", s.get("manha"), _dur_horario(s.get("manha"), "manha"), qn, qx, None))
         if s.get("tarde"):
-            uteis.append(("Tarde", "tarde", s.get("tarde"), _dur_horario(s.get("tarde"), "tarde"),
-                          _cnt(int(s.get("min_tarde") or 0), s.get("max_tarde")), None))
+            qn, qx = _cnt(int(s.get("min_tarde") or 0), s.get("max_tarde"))
+            uteis.append(("Tarde", "tarde", s.get("tarde"), _dur_horario(s.get("tarde"), "tarde"), qn, qx, None))
         if s.get("cinderela"):
             dc = {_dia_curto(x) for x in (s.get("dias_cind") or [])}
-            uteis.append(("Cinderela", "cind", s.get("cinderela"), _dur_horario(s.get("cinderela"), "cind"),
-                          _cnt(int(s.get("min_cind") or 0), s.get("max_cind")), dc))
+            qn, qx = _cnt(int(s.get("min_cind") or 0), s.get("max_cind"))
+            uteis.append(("Cinderela", "cind", s.get("cinderela"), _dur_horario(s.get("cinderela"), "cind"), qn, qx, dc))
         fds = []
         if s.get("fds_manha"):
-            fds.append(("Manhã", "manha", s.get("fds_manha"), _dur_horario(s.get("fds_manha"), "manha"),
-                        _cnt(int(s.get("fds_min_manha") or 0), s.get("fds_max_manha")), None))
+            qn, qx = _cnt(int(s.get("fds_min_manha") or 0), s.get("fds_max_manha"))
+            fds.append(("Manhã", "manha", s.get("fds_manha"), _dur_horario(s.get("fds_manha"), "manha"), qn, qx, None))
         if s.get("fds_tarde"):
-            fds.append(("Tarde", "tarde", s.get("fds_tarde"), _dur_horario(s.get("fds_tarde"), "tarde"),
-                        _cnt(int(s.get("fds_min_tarde") or 0), s.get("fds_max_tarde")), None))
+            qn, qx = _cnt(int(s.get("fds_min_tarde") or 0), s.get("fds_max_tarde"))
+            fds.append(("Tarde", "tarde", s.get("fds_tarde"), _dur_horario(s.get("fds_tarde"), "tarde"), qn, qx, None))
         if s.get("fds_cind"):
-            fds.append(("Cinderela", "cind", s.get("fds_cind"), _dur_horario(s.get("fds_cind"), "cind"),
-                        _cnt(int(s.get("fds_min_cind") or 0), s.get("fds_max_cind")), None))
+            qn, qx = _cnt(int(s.get("fds_min_cind") or 0), s.get("fds_max_cind"))
+            fds.append(("Cinderela", "cind", s.get("fds_cind"), _dur_horario(s.get("fds_cind"), "cind"), qn, qx, None))
 
         slots = []
         for di in range(7):
             dia3 = dias3[di]
             grupo = uteis if di < 5 else fds
-            for (tn, tk, hor, hrs, qtd, dc) in grupo:
+            for (tn, tk, hor, hrs, qmin, qmax, dc) in grupo:
                 if tk == "cind" and dc is not None and dia3 not in dc:
                     continue
                 if (tk, dia3) in bloq:
                     continue
                 if tk == "tarde" and dia3 == "Qui" and "sem tarde" in regra_quinta:
                     continue
-                slots.append((datas[di], dia3, tn, tk, hor, hrs, qtd))
+                slots.append((datas[di], dia3, tn, tk, hor, hrs, qmin, qmax, locn))
         return slots
 
     detalhada = []
@@ -765,67 +775,76 @@ def gerar_detalhada_python(calendario, config):
         datas = [base + timedelta(days=i) for i in range(7)]
         aloc = cal_by_week.get(w, {})
 
-        # SGs -> bloco/serviço nesta semana
-        atrib = {}  # bidx -> {sidx: set(sg)}; sidx pode ser "_blk" p/ resolver depois
+        # SGs -> BLOCO nesta semana (o bloco é a unidade: alunos cobrem TODOS os serviços dele)
+        bloco_sgs = {}  # bidx -> set(sg)
         for sg_key, dest in aloc.items():
             sgn = _re_val.sub(r"\D", "", str(sg_key))
             if not sgn:
                 continue
-            b, svc = _match(dest)
+            b, _svc = _match(dest)
             if not b:
                 continue
-            bidx = blocos.index(b)
-            atrib.setdefault(bidx, {})
-            if svc is not None:
-                atrib[bidx].setdefault(b["servs"].index(svc), set()).add(sgn)
-            else:
-                atrib[bidx].setdefault("_blk", set()).add(sgn)
+            bloco_sgs.setdefault(blocos.index(b), set()).add(sgn)
 
-        for bidx, svcmap in atrib.items():
+        for bidx, sgset in bloco_sgs.items():
             b = blocos[bidx]
-            servs = b["servs"]
-            if "_blk" in svcmap:  # SGs sem serviço específico: distribui entre os serviços
-                for i, sg in enumerate(sorted(svcmap.pop("_blk"))):
-                    svcmap.setdefault(i % len(servs), set()).add(sg)
-            for sidx, sgset in svcmap.items():
-                if not isinstance(sidx, int):
-                    continue
-                s = servs[sidx]
-                estud = [(n, sg) for sg in sorted(sgset) for n in alunos_por_sg.get(sg, [])]
-                if not estud:
-                    continue
-                nomes = [n for n, _ in estud]
-                sg_de = {n: sg for n, sg in estud}
-                horas_aluno = {n: 0.0 for n in nomes}
-                ocupado = {}  # (dia3,turno_key) -> set
-                for (data, dia3, tn, tk, hor, hrs, qtd) in _slots_servico(s, datas):
-                    chosen = []
-                    # Nunca força além do limite absoluto: se faltar gente, deixa o turno incompleto
-                    # (o validador avisa) em vez de estourar a carga horária do aluno.
-                    for cap in (limite, limite_abs):
-                        for n in sorted(nomes, key=lambda x: horas_aluno[x]):
-                            if len(chosen) >= qtd:
-                                break
-                            if n in chosen or n in ocupado.get((dia3, tk), set()):
-                                continue
-                            if horas_aluno[n] + hrs > cap:
-                                continue
-                            chosen.append(n)
-                        if len(chosen) >= qtd:
+            estud = [(n, sg) for sg in sorted(sgset) for n in alunos_por_sg.get(sg, [])]
+            if not estud:
+                continue
+            nomes = [n for n, _ in estud]
+            sg_de = {n: sg for n, sg in estud}
+            # Todos os turnos de TODOS os serviços do bloco
+            slots = []
+            for s in b["servs"]:
+                slots.extend(_slots_servico(s, datas))
+            horas_aluno = {n: 0.0 for n in nomes}
+            ocupado = {}  # (dia3,turno_key) -> set
+            assigned = [[] for _ in slots]
+
+            def _cabe(n, idx, hrs, dia3, tk, cap):
+                return (n not in assigned[idx] and n not in ocupado.get((dia3, tk), set())
+                        and horas_aluno[n] + hrs <= cap)
+
+            def _por(n, idx, hrs, dia3, tk):
+                assigned[idx].append(n)
+                ocupado.setdefault((dia3, tk), set()).add(n)
+                horas_aluno[n] += hrs
+
+            # Fase 1 — cobre o mínimo de cada turno (cobertura garantida), sem estourar
+            for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+                for cap in (limite, limite_abs):
+                    for n in sorted(nomes, key=lambda x: horas_aluno[x]):
+                        if len(assigned[idx]) >= qmin:
                             break
-                    if not chosen:
-                        continue
-                    ocupado.setdefault((dia3, tk), set())
-                    for n in chosen:
-                        horas_aluno[n] += hrs
-                        ocupado[(dia3, tk)].add(n)
-                    detalhada.append({
-                        "semana": w, "data": data.strftime("%d/%m"), "dia": dia3,
-                        "local": s.get("nome") or s.get("abrev") or b["nome"],
-                        "turno": tn, "horario": hor, "horas": hrs,
-                        "sg": "+".join(sorted({sg_de[n] for n in chosen}, key=lambda x: int(x) if x.isdigit() else 99)),
-                        "alunos": chosen,
-                    })
+                        if _cabe(n, idx, hrs, dia3, tk, cap):
+                            _por(n, idx, hrs, dia3, tk)
+                    if len(assigned[idx]) >= qmin:
+                        break
+
+            # Fase 2 — completa quem está abaixo do alvo, usando a folga (até o máx), sem passar de 40h
+            progresso = True
+            while progresso and any(horas_aluno[n] < alvo_min for n in nomes):
+                progresso = False
+                for n in sorted([x for x in nomes if horas_aluno[x] < alvo_min], key=lambda x: horas_aluno[x]):
+                    for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+                        teto = qmax if qmax is not None else len(nomes)
+                        if len(assigned[idx]) >= teto:
+                            continue
+                        if _cabe(n, idx, hrs, dia3, tk, limite):
+                            _por(n, idx, hrs, dia3, tk)
+                            progresso = True
+                            break
+
+            for idx, (data, dia3, tn, tk, hor, hrs, qmin, qmax, locn) in enumerate(slots):
+                ch = assigned[idx]
+                if not ch:
+                    continue
+                detalhada.append({
+                    "semana": w, "data": data.strftime("%d/%m"), "dia": dia3,
+                    "local": locn or b["nome"], "turno": tn, "horario": hor, "horas": hrs,
+                    "sg": "+".join(sorted({sg_de[n] for n in ch}, key=lambda x: int(x) if x.isdigit() else 99)),
+                    "alunos": ch,
+                })
     detalhada.sort(key=lambda e: (e["semana"], e["data"], e["local"], e["turno"]))
     return detalhada
 
@@ -866,6 +885,15 @@ def mostrar_validacao(val):
         st.warning("⚠️ **Possíveis dias sem cobertura** (confira se não é bloqueio legítimo):")
         for b in val["buracos"][:30]:
             st.markdown(f"- {b['local']} / {b['turno']} — sem {b['semana']}: faltam {', '.join(b['dias'])}")
+    if val.get("subcarga"):
+        alvo = val.get("alvo_min", 34)
+        st.warning(f"⏬ **{len(val['subcarga'])} aluno(s)/semana ABAIXO da CH mínima alvo ({alvo}h):**")
+        for sgc in val["subcarga"][:20]:
+            st.markdown(f"- **{sgc['aluno']}** — semana {sgc['semana']}: só **{sgc['horas']}h** (alvo {alvo}h)")
+        if len(val["subcarga"]) > 20:
+            st.caption(f"...e mais {len(val['subcarga']) - 20}")
+        st.caption("💡 Para subir a CH: ative mais turnos no bloco (ex: cinderela no PA), aumente o máx/dia "
+                   "dos turnos, ou reduza a CH mínima alvo no Bloco 5.")
 
 # ── Mostrar resultado ────────────────────────────────────────────────────────
 def mostrar_resultado(resposta_raw, esp, grupo, turma):
@@ -1545,7 +1573,9 @@ with st.expander("⚙️ Bloco 5 — Regras Especiais", expanded=True):
     with col_r1:
         regra_quinta = st.text_input("Quinta-feira", value=pf.get("regra_quinta","Sem tarde (ENAMED para todos)"))
         regra_terca = st.text_input("Terça-feira", value=pf.get("regra_terca","Tarde encurtada 12-16h (aula às 16h)"))
-        limite_ch = st.number_input("Limite CH padrão (h)", 20, 60, int(pf.get("limite_ch",40)))
+        limite_ch = st.number_input("Limite CH máximo (h/sem)", 20, 60, int(pf.get("limite_ch",40)))
+        limite_min = st.number_input("CH mínima alvo (h/sem)", 0, 60, int(pf.get("limite_min",34)),
+            help="O sistema completa os turnos até cada aluno chegar perto desta carga (sem passar do máximo).")
     with col_r2:
         limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, int(pf.get("limite_abs",43)))
         regra_fds = st.text_area("Regras de plantão FDS", value=pf.get("regra_fds",""), height=80)
@@ -1656,7 +1686,8 @@ Extras: {regras_extras}
             "ra_por_aluno": st.session_state.get("ra_por_aluno", {}),
             "rodizio_desc": rodizio_desc,
             "regras_especiais": {"quinta": regra_quinta, "terca": regra_terca,
-                "limite_ch": int(limite_ch), "limite_abs": int(limite_abs), "fds": regra_fds},
+                "limite_ch": int(limite_ch), "limite_abs": int(limite_abs),
+                "limite_min": int(limite_min), "fds": regra_fds},
             "pares": [], "blocos": [],
         }
         with st.spinner("Passo 1/2 — Calendário e resumo de horas... ⏳"):
