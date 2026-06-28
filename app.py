@@ -457,6 +457,23 @@ def validar_escala(dados, config):
                     ausentes.append({"servico": s.get("nome") or s.get("abrev") or f"serviço {i+1}",
                                      "bloco": bloco, "semana": sem})
 
+    # ── Aluno que não passou por algum serviço (rodízio incompleto) ──────────
+    visitou = _dd(set)
+    todos_locais = set()
+    for e in det:
+        loc = str(e.get("local", ""))
+        if not loc:
+            continue
+        todos_locais.add(loc)
+        for al in _alunos_entrada(e):
+            visitou[al].add(loc)
+    nao_passou = []
+    for al in (visitou or {}):
+        faltam = todos_locais - visitou[al]
+        if faltam:
+            nao_passou.append({"aluno": al, "faltam": sorted(faltam)})
+    nao_passou.sort(key=lambda x: x["aluno"])
+
     semanas_ruins = sorted(
         {e["semana"] for e in estouros} | {c["semana"] for c in conflitos}
         | {d["semana"] for d in desvios} | {a["semana"] for a in ausentes},
@@ -464,6 +481,7 @@ def validar_escala(dados, config):
     return {
         "estouros": estouros, "conflitos": conflitos, "buracos": buracos,
         "desvios": desvios, "ausentes": ausentes, "subcarga": subcarga,
+        "nao_passou": nao_passou,
         "limite": limite, "limite_abs": limite_abs, "alvo_min": alvo_min,
         "ok": (not estouros and not conflitos and not desvios and not ausentes),
         "semanas_ruins": semanas_ruins,
@@ -725,7 +743,6 @@ def gerar_detalhada_python(calendario, config):
     limite = int(reg.get("limite_ch", 40))
     limite_abs = int(reg.get("limite_abs", 43))
     alvo_min = int(reg.get("limite_min", 34))   # CH mínima alvo (completa até aqui se possível)
-    dias_consec = int(reg.get("dias_consec", 0))  # 0 = desligado; N = manter no mesmo serviço por N dias
     regra_quinta = str(reg.get("quinta", "")).lower()
     alunos_por_sg = config.get("alunos_por_sg", {})
     num_sem = int(config.get("num_semanas", 8))
@@ -854,6 +871,8 @@ def gerar_detalhada_python(calendario, config):
 
             # Plano de continuidade POR SUBGRUPO: o SG inteiro (as duplas) fica no mesmo serviço
             # por blocos de N dias úteis, e o SG todo roda junto para o próximo serviço.
+            # A continuidade é configurada POR BLOCO (Bloco 3), não global.
+            dias_consec = int(b["loc"].get("dias_consec", 0) or 0)
             plano = {}
             usa_continuidade = dias_consec > 0 and len(servs_bloco) > 1
             if usa_continuidade:
@@ -966,6 +985,13 @@ def mostrar_validacao(val):
         st.warning("⚠️ **Possíveis dias sem cobertura** (confira se não é bloqueio legítimo):")
         for b in val["buracos"][:30]:
             st.markdown(f"- {b['local']} / {b['turno']} — sem {b['semana']}: faltam {', '.join(b['dias'])}")
+    if val.get("nao_passou"):
+        st.warning(f"🔁 **{len(val['nao_passou'])} aluno(s) NÃO passaram por algum serviço (rodízio incompleto):**")
+        for np_ in val["nao_passou"][:25]:
+            st.markdown(f"- **{np_['aluno']}**: faltou passar em {', '.join(np_['faltam'])}")
+        if len(val["nao_passou"]) > 25:
+            st.caption(f"...e mais {len(val['nao_passou']) - 25}")
+        st.caption("💡 Geralmente é a tabela de rodízio (Bloco 4): ajuste para que todos os SGs passem por todos os locais.")
     if val.get("subcarga"):
         alvo = val.get("alvo_min", 34)
         st.warning(f"⏬ **{len(val['subcarga'])} aluno(s)/semana ABAIXO da CH mínima alvo ({alvo}h):**")
@@ -1583,6 +1609,20 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
                         f"todos os {n_sgs_total} SGs passam por aqui ao longo do rodízio"
                     )
 
+            # Continuidade NESTE bloco (só faz sentido com 2+ serviços)
+            dias_consec_bloco = 0
+            if n_srv_bloco > 1:
+                cc1, cc2 = st.columns([3, 1])
+                with cc1:
+                    manter_b = st.checkbox(
+                        "🔗 Manter o subgrupo no mesmo serviço por vários dias seguidos (neste bloco)",
+                        value=bool(pl.get("dias_consec", 0)), key=f"consec_chk_{i}",
+                        help="Ex: o SG fica 3 dias na Enfermaria, depois roda para o PA — em vez de pular de serviço todo dia.")
+                with cc2:
+                    if manter_b:
+                        dias_consec_bloco = int(st.number_input("Dias seguidos", 2, 5,
+                            int(pl.get("dias_consec", 3) or 3), key=f"consec_n_{i}"))
+
             # Gerar duracao_sgs automaticamente
             duracao_sgs_bloco = {str(sg+1): int(sem_por_sg) for sg in range(n_sgs_total)}
 
@@ -1590,6 +1630,7 @@ with st.expander("📍 Bloco 3 — Blocos de Rodízio", expanded=True):
             srv_principal["duracao_por_sg"] = duracao_sgs_bloco
             srv_principal["sem_por_sg"] = int(sem_por_sg)
             srv_principal["sgs_por_servico"] = sgs_por_srv
+            srv_principal["dias_consec"] = dias_consec_bloco
             for srv_e in srv_extras:
                 srv_e["duracao_por_sg"] = duracao_sgs_bloco
                 srv_e["sem_por_sg"] = int(sem_por_sg)
@@ -1661,13 +1702,8 @@ with st.expander("⚙️ Bloco 5 — Regras Especiais", expanded=True):
         limite_abs = st.number_input("Limite CH absoluto (h)", 20, 60, int(pf.get("limite_abs",43)))
         regra_fds = st.text_area("Regras de plantão FDS", value=pf.get("regra_fds",""), height=80)
         regras_extras = st.text_area("Outras regras", value=pf.get("regras_extras",""), height=80)
-    st.markdown("---")
-    manter_consec = st.checkbox(
-        "🔗 Manter o aluno no mesmo serviço por vários dias seguidos (quando possível)",
-        value=bool(pf.get("dias_consec", 0)),
-        help="Em blocos com mais de um serviço (ex: Enf + PA), evita que o aluno fique pulando de serviço todo dia.")
-    dias_consec = st.number_input("Dias consecutivos no mesmo serviço", 2, 5,
-        int(pf.get("dias_consec", 3) or 3)) if manter_consec else 0
+    st.caption("🔗 A opção de **manter o subgrupo no mesmo serviço por N dias seguidos** agora fica "
+               "**dentro de cada bloco** (Bloco 3), pra você escolher só nos blocos que quiser.")
 
 # BLOCO 6
 with st.expander("📊 Bloco 6 — Formato do Excel", expanded=False):
@@ -1794,7 +1830,7 @@ Extras: {regras_extras}
             "rodizio_desc": rodizio_desc,
             "regras_especiais": {"quinta": regra_quinta, "terca": regra_terca,
                 "limite_ch": int(limite_ch), "limite_abs": int(limite_abs),
-                "limite_min": int(limite_min), "dias_consec": int(dias_consec), "fds": regra_fds},
+                "limite_min": int(limite_min), "fds": regra_fds},
             "pares": [], "blocos": [],
         }
         with st.spinner("Passo 1/2 — Calendário e resumo de horas... ⏳"):
