@@ -1901,6 +1901,36 @@ def mostrar_resultado(resposta_raw, esp, grupo, turma):
     except Exception as e:
         st.warning(f"Erro ao gerar os arquivos do Lovable: {e}")
 
+    # ── Prompt pronto para publicar via Claude Code (copie e cole) ──
+    _SIGLAS = {"GINECOLOGIA": "GO", "CLÍNICA MÉDICA": "CM", "CLINICA MEDICA": "CM",
+               "CIRÚRGICA": "CIRURGIA", "CIRURGICA": "CIRURGIA", "CIRURGIA": "CIRURGIA",
+               "PEDIATRIA": "PED", "FAMÍLIA": "MFC", "FAMILIA": "MFC", "MENTAL": "SM"}
+    _sig = next((v for k, v in _SIGLAS.items() if k in (esp or "").upper()), "XX")
+    _cod_sug = f"R1-{_sig}-{turma}" if turma else f"R1-{_sig}-T?"
+    with st.expander("🤖 Publicar no Lovable via Claude Code (prompt pronto)", expanded=True):
+        cpa, cpb = st.columns(2)
+        with cpa:
+            _cod = st.text_input("Código do rodízio", value=_cod_sug, key="_pub_codigo",
+                help="Ex.: R1-GO-T6 (Rodízio 1 · GO · Turma 6). Ajuste o número do rodízio se preciso.")
+        with cpb:
+            _nsg_def = st.session_state.get("config_atual", {}).get("num_sg", 6)
+            _nsg_opts = [4, 6, 8]
+            _nsg = st.selectbox("Subgrupos (opcao_total_sg)", _nsg_opts,
+                index=_nsg_opts.index(_nsg_def) if _nsg_def in _nsg_opts else 1, key="_pub_nsg")
+        _prompt_pub = (
+            f"Publique a escala {_cod} no Lovable usando publicar_lovable.py.\n"
+            f"- Código do rodízio: {_cod}\n"
+            f"- Subgrupos (opcao_total_sg): {_nsg}\n"
+            f"- Especialidade: {esp} | Turma: {turma}\n"
+            f"- Anexei os 3 arquivos do gerador: template_{_slug_lv}.xlsx, "
+            f"importar_lovable_{_slug_lv}.xlsx e o definicoes_*.json.\n"
+            f"Faça dry-run primeiro pra eu conferir, depois publique e valide "
+            f"(CH, plano de blocos, rotação diagonal e área verde)."
+        )
+        st.caption("1) Baixe os 3 arquivos acima.  2) Copie este prompt (botão 📋 no canto).  "
+                   "3) Abra uma conversa NOVA no Claude Code e cole o prompt + anexe os 3 arquivos.")
+        st.code(_prompt_pub, language="text")
+
     # Correção
     st.divider()
     with st.expander("🔁 Solicitar correção à IA"):
