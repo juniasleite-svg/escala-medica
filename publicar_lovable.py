@@ -137,6 +137,34 @@ class ServiceCatalog:
         return key in self._by_norm or (key in self._alias and self._alias[key] in self._by_norm)
 
 
+# Apelidos por especialidade: nomes que o GERADOR exporta -> nome cadastrado no Lovable.
+# São aplicados SÓ dentro da especialidade certa (build_plan/fetch_service_catalog são
+# por-especialidade), então é seguro mapear "PS SCA"->"PS GO SCA" sem afetar CIRURGIA/PED,
+# que têm seus próprios "PS SCA"/"PNAR SCA".
+_SPECIALTY_ALIASES: dict[str, dict[str, str]] = {
+    "ginecologia e obstetricia": {
+        "USG MANDIC": "USG GO MANDIC",
+        "ENF SCA PUERPÉRIO": "ENFERMARIA PUERPERIO SCA",
+        "ENF SCA": "ENFERMARIA PUERPERIO SCA",
+        "ENFERMARIA SCA ALTO RISCO": "ENFERMARIA ALTO RISCO SCA",
+        "ENF ALTO RISCO": "ENFERMARIA ALTO RISCO SCA",
+        "PS SCA": "PS GO SCA",
+        "PNAR SCA": "PNAR GO SCA",
+        "PNAR MANDIC": "AMBULATÓRIO GO",
+        "ambulatório mandic": "AMBULATÓRIO GO",
+        "amb": "AMBULATÓRIO GO",
+    },
+}
+
+
+def specialty_aliases(especialidade: str) -> dict[str, str]:
+    """Apelidos padrão para a especialidade (casados por _esp_lookups)."""
+    out: dict[str, str] = {}
+    for esp in _esp_lookups(especialidade):
+        out.update(_SPECIALTY_ALIASES.get(_norm(esp), {}))
+    return out
+
+
 def fetch_service_catalog(query_fn, especialidade: str, alias_extra: dict[str, str] | None = None) -> ServiceCatalog:
     """
     Lê do banco os serviços da especialidade (e ÁREA VERDE, que é 'TODAS') e monta o catálogo.
@@ -629,7 +657,7 @@ def main(argv=None):
             cur.execute(sql)
             return cur.fetchall()
 
-        catalog = fetch_service_catalog(query_fn, inp.especialidade)
+        catalog = fetch_service_catalog(query_fn, inp.especialidade, specialty_aliases(inp.especialidade))
         plan = build_plan(inp, args.codigo, catalog, args.opcao_sg)
         print_summary(plan)
         _execute_plan(cur, plan, inp.grupo)
