@@ -1,0 +1,94 @@
+{
+  "_comentario": "Catálogo de especialidades e serviços CADASTRADOS no Lovable. Alimenta os seletores (dropdowns) do gerador, para que serviço/local nunca seja digitado errado. Exportado do banco; quando um serviço novo for cadastrado no Lovable, re-exportar este arquivo.",
+  "especialidades": [
+    "CLÍNICA CIRÚRGICA",
+    "CLÍNICA MÉDICA",
+    "GINECOLOGIA E OBSTETRÍCIA",
+    "MEDICINA DE FAMÍLIA E COMUNIDADE",
+    "PEDIATRIA",
+    "SAÚDE MENTAL (1 MÊS) + ELETIVO (1 MÊS)"
+  ],
+  "servicos_compartilhados": [
+    "ÁREA VERDE",
+    "ÁREA LIVRE",
+    "AULA TEÓRICA DO MÓDULO",
+    "AULA DE CORREÇÕES DE QUESTÕES - REFORÇO ENAMED"
+  ],
+  "servicos_por_especialidade": {
+    "CLÍNICA CIRÚRGICA": [
+      "AMB OFTALMO MANDIC",
+      "AMBULATÓRIO CIRURGIA HSLMA",
+      "ANESTESIO - SC LEME",
+      "ANESTESIO - SCA",
+      "ANESTESIO-MANDIC",
+      "CC MANDIC",
+      "CC SCA",
+      "ENF CIR SCA",
+      "ENFERMARIA CIRÚRGICA E CC-LEME",
+      "ORTOPEDIA SCA",
+      "PS SCA",
+      "SAMU"
+    ],
+    "CLÍNICA MÉDICA": [
+      "AMBULATÓRIO CLÍNICA MÉDICA-MANDIC",
+      "ENF CM HSLMA",
+      "ENFMANDIC",
+      "PA ADULTO MANDIC",
+      "Pronto Socorro SC LEME",
+      "PS ADULTO SCA",
+      "SALA EMERGÊNCIA- LEME",
+      "UPA ADULTO MANDIC",
+      "UTI HSLM"
+    ],
+    "GINECOLOGIA E OBSTETRÍCIA": [
+      "AMBULATÓRIO GO",
+      "AULA TEÓRICA GO",
+      "CC GO MANDIC",
+      "CENTRO OBSTÉTRICO ARARAS",
+      "CENTRO OBSTÉTRICO LEME",
+      "CIRURGIA GINECOLÓGICA SCA",
+      "CO LEME",
+      "CO SCA",
+      "ENFERMARIA ALTO RISCO SCA",
+      "ENFERMARIA PUERPERIO SCA",
+      "PNAR GO SCA",
+      "PS GO SCA",
+      "SIMULAÇÃO GO",
+      "UBS Alberto Franzini - Ginecologia e Obstetrícia",
+      "USG GO MANDIC",
+      "USG GO SCA"
+    ],
+    "MEDICINA DE FAMÍLIA E COMUNIDADE": [
+      "ESF BENTO FERES",
+      "ESF EDMUNDO ULSON",
+      "ESF FERMIN BLANCO",
+      "ESF JERÔNYMO OMETTO",
+      "ESF LUCIA MENEGHETTI",
+      "ESF OPHELIA PESCE",
+      "ESF SIMÕES PONTES",
+      "LIVRE MFC",
+      "PSF NARCISO GOMES II",
+      "UBS"
+    ],
+    "PEDIATRIA": [
+      "AMBULATÓRIO PED HSLMA",
+      "AULA TEÓRICA PED 5º ANO (08-12H)",
+      "AULA TEÓRICA PED 6º ANO (10-12H)",
+      "CORREÇÃO DE QUESTÕES",
+      "ENF PED LEME",
+      "ENFERMARIA PED MANDIC",
+      "PA PED MANDIC",
+      "SALA PARTO E AC LEME",
+      "SC LIMEIRA PED",
+      "SIMULAÇÃO PED",
+      "UPA PED MANDIC"
+    ],
+    "SAÚDE MENTAL (1 MÊS) + ELETIVO (1 MÊS)": [
+      "AMBULATÓRIO PSQ HSLMA",
+      "AULA TEÓRICA SM (08-10H)",
+      "ELETIVO",
+      "ENF QD + TRIAGEM PSQ HSLMA",
+      "ENFERMARIA PQS HSLMA"
+    ]
+  }
+}
