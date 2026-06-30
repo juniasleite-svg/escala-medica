@@ -48,7 +48,7 @@ def chamar_claude(mensagens, system_prompt="", max_tokens=8000):
 def _ler_subgrupos(df_f):
     """Lê um recorte da planilha de alunos -> ({sg: [nomes]}, {nome: RA})."""
     apsg, ra = {}, {}
-    for sg_num in sorted(df_f["Sub Grupo"].dropna().unique()):
+    for sg_num in sorted(df_f["Sub Grupo"].dropna().unique(), key=lambda x: int(x)):
         sub = df_f[df_f["Sub Grupo"] == sg_num]
         nomes = [str(x).strip() for x in sub["Nome Completo"].tolist() if str(x).strip()]
         apsg[str(int(sg_num))] = nomes
@@ -58,6 +58,46 @@ def _ler_subgrupos(df_f):
                 if nm:
                     ra[nm] = str(rr.get("RA", "") or "").strip()
     return apsg, ra
+
+# ── Formato "tabela longa" de alunos ──────────────────────────────────────────
+# Algumas bases trazem UMA aba por OPÇÃO de subgrupos (ex.: "Opção 3 (8 SG)"),
+# com TODOS os grupos juntos numa coluna "Grupo" e todos os rodízios numa coluna
+# "Nº Rodízio". A divisão de subgrupos é constante entre rodízios, então basta
+# filtrar pelo grupo e por um único rodízio. (O outro formato — uma aba por grupo,
+# com coluna "OPÇÃO" — continua suportado pelos chamadores.)
+def _abas_long_alunos(xls):
+    """Abas no formato tabela longa (colunas Grupo + Sub Grupo + Nome Completo)."""
+    out = []
+    for s in xls.sheet_names:
+        try:
+            hd = xls.parse(s, nrows=0)
+        except Exception:
+            continue
+        cols = {str(c).strip().lower() for c in hd.columns}
+        if "grupo" in cols and "sub grupo" in cols and "nome completo" in cols:
+            out.append(s)
+    return out
+
+def _df_long_grupo(xls_bytes, sheet, grupo):
+    """Recorta a tabela longa: só o grupo escolhido e um único rodízio (divisão constante)."""
+    d = pd.read_excel(io.BytesIO(xls_bytes), engine="openpyxl", sheet_name=sheet)
+    d.columns = [str(c).strip() for c in d.columns]
+    if "Grupo" in d.columns and grupo:
+        d = d[d["Grupo"].astype(str).str.strip() == str(grupo).strip()]
+    if "Nº Rodízio" in d.columns and d["Nº Rodízio"].notna().any():
+        d = d[d["Nº Rodízio"] == d["Nº Rodízio"].dropna().iloc[0]]
+    if "Nome Completo" in d.columns:
+        d = d.drop_duplicates(subset=["Nome Completo"])
+    return d
+
+def _grupos_long(xls_bytes, sheet):
+    """Lista de grupos (ex.: 'Grupo A'… 'Grupo F') presentes numa aba long."""
+    d = pd.read_excel(io.BytesIO(xls_bytes), engine="openpyxl", sheet_name=sheet)
+    d.columns = [str(c).strip() for c in d.columns]
+    if "Grupo" not in d.columns:
+        return []
+    vals = [str(x).strip() for x in d["Grupo"].dropna().unique() if str(x).strip()]
+    return sorted(set(vals))
 
 # ── JSON Parser robusto ───────────────────────────────────────────────────────
 def extrair_json(texto):
@@ -2074,24 +2114,46 @@ Retorne APENAS JSON válido (sem markdown, sem comentários) com esta estrutura:
                             try:
                                 _b = arquivo_alunos_imp.read()
                                 _xls_b = pd.ExcelFile(io.BytesIO(_b), engine="openpyxl")
-                                _sheets_g = [s for s in _xls_b.sheet_names if "GRUPO" in s.upper()]
-                                _gp = str(dados.get("grupo", "")).upper().replace("GRUPO", "").strip()
-                                _sh = next((s for s in _sheets_g
-                                            if s.upper().replace("GRUPO", "").strip() == _gp), None)
-                                if _sh:
-                                    _dfg = pd.read_excel(io.BytesIO(_b), engine="openpyxl", sheet_name=_sh)
-                                    if "OPÇÃO" in _dfg.columns:
-                                        _ns = int(dados.get("num_sg", 6) or 6)
-                                        _ops = list(_dfg["OPÇÃO"].dropna().unique())
-                                        _op = next((o for o in _ops if f"{_ns} SG" in str(o)), _ops[0] if _ops else None)
-                                        if _op is not None:
-                                            _dff = _dfg[_dfg["OPÇÃO"] == _op]
-                                            _novos, _ra = _ler_subgrupos(_dff)
-                                            if _novos:
-                                                st.session_state.prefill["alunos_por_sg"] = _novos
-                                                st.session_state.prefill["num_sg"] = len(_novos)
-                                                st.session_state["ra_por_aluno"] = _ra
-                                                st.session_state.prefill["_alunos_base_grupo"] = _sh
+                                _ns = int(dados.get("num_sg", 6) or 6)
+                                _gpname = str(dados.get("grupo", "")).strip()
+                                _gp = _gpname.upper().replace("GRUPO", "").strip()
+                                _novos, _ra, _shname = None, {}, None
+                                _long_b = _abas_long_alunos(_xls_b)
+                                if _long_b:
+                                    # Formato tabela longa: escolhe grupo + aba/opção com nº de SG = _ns
+                                    _grps = _grupos_long(_b, _long_b[0])
+                                    _gmatch = next((g for g in _grps
+                                                    if g.upper().replace("GRUPO", "").strip() == _gp), _gpname)
+                                    _best = None
+                                    for s in _long_b:
+                                        _c = int(_df_long_grupo(_b, s, _gmatch)["Sub Grupo"].dropna().nunique())
+                                        if _best is None:
+                                            _best = s
+                                        if _c == _ns:
+                                            _best = s
+                                            break
+                                    if _best:
+                                        _dff = _df_long_grupo(_b, _best, _gmatch)
+                                        _novos, _ra = _ler_subgrupos(_dff)
+                                        _shname = f"{_gmatch} ({_best})"
+                                else:
+                                    _sheets_g = [s for s in _xls_b.sheet_names if "GRUPO" in s.upper()]
+                                    _sh = next((s for s in _sheets_g
+                                                if s.upper().replace("GRUPO", "").strip() == _gp), None)
+                                    if _sh:
+                                        _dfg = pd.read_excel(io.BytesIO(_b), engine="openpyxl", sheet_name=_sh)
+                                        if "OPÇÃO" in _dfg.columns:
+                                            _ops = list(_dfg["OPÇÃO"].dropna().unique())
+                                            _op = next((o for o in _ops if f"{_ns} SG" in str(o)), _ops[0] if _ops else None)
+                                            if _op is not None:
+                                                _dff = _dfg[_dfg["OPÇÃO"] == _op]
+                                                _novos, _ra = _ler_subgrupos(_dff)
+                                                _shname = _sh
+                                if _novos:
+                                    st.session_state.prefill["alunos_por_sg"] = _novos
+                                    st.session_state.prefill["num_sg"] = len(_novos)
+                                    st.session_state["ra_por_aluno"] = _ra
+                                    st.session_state.prefill["_alunos_base_grupo"] = _shname
                             except Exception:
                                 pass   # mantém os alunos extraídos da escala se a base falhar
                         st.success("✅ Escala analisada! Role para baixo para ver o formulário pré-preenchido.")
@@ -2191,8 +2253,35 @@ with st.expander("👥 Bloco 2 — Alunos e Subgrupos", expanded=True):
         try:
             _bytes_alunos2 = arquivo_alunos.read()
             xls2 = pd.ExcelFile(io.BytesIO(_bytes_alunos2), engine="openpyxl")
+            _long2 = _abas_long_alunos(xls2)
             grupos_disp = [s for s in xls2.sheet_names if "GRUPO" in s.upper()]
-            if grupos_disp:
+            if _long2:
+                # ---- Formato tabela longa: 1 aba por opção de SG + coluna "Grupo" ----
+                _grupos = _grupos_long(_bytes_alunos2, _long2[0])
+                _gp = (grupo or pf.get("grupo", "") or "").strip().upper().replace("GRUPO", "").strip()
+                _gidx = next((i for i, g in enumerate(_grupos)
+                              if _gp and g.upper().replace("GRUPO", "").strip() == _gp), 0)
+                col_g1, col_g2 = st.columns(2)
+                with col_g1:
+                    grupo_sel = st.selectbox("👥 Grupo (escolha o grupo certo)", _grupos,
+                                             index=_gidx if _grupos else 0)
+                # rótulo de cada opção com a contagem REAL de SG para este grupo
+                _labels, _sheets = [], []
+                for s in _long2:
+                    _c = int(_df_long_grupo(_bytes_alunos2, s, grupo_sel)["Sub Grupo"].dropna().nunique())
+                    _labels.append(f"{s} — {_c} SG")
+                    _sheets.append((s, _c))
+                _oidx = next((i for i, (_, c) in enumerate(_sheets) if c == int(num_sg)), 0)
+                with col_g2:
+                    _osel = st.selectbox("Opção de subgrupos", _labels,
+                                         index=_oidx if _labels else 0)
+                _sheet_sel = _sheets[_labels.index(_osel)][0]
+                df_f = _df_long_grupo(_bytes_alunos2, _sheet_sel, grupo_sel)
+                alunos_por_sg, ra_map = _ler_subgrupos(df_f)
+                st.session_state["ra_por_aluno"] = ra_map
+                st.success(f"✅ {grupo_sel}: {len(df_f)} alunos em {len(alunos_por_sg)} SGs (com RA). "
+                           f"Primeiros: {', '.join(df_f['Nome Completo'].head(3).astype(str))}…")
+            elif grupos_disp:
                 # default já no grupo informado/importado (ex.: "Grupo C" -> aba "GRUPO C")
                 _gp = (grupo or pf.get("grupo", "") or "").upper().replace("GRUPO", "").strip()
                 _idx = next((i for i, s in enumerate(grupos_disp)
