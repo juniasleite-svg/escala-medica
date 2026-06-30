@@ -1,0 +1,15 @@
+# Segredos — NUNCA versionar
+.env
+.env.*
+!.env.example
+*.secret
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Saídas temporárias
+/tmp_out/
+*.log
