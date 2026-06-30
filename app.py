@@ -1901,6 +1901,36 @@ def mostrar_resultado(resposta_raw, esp, grupo, turma):
     except Exception as e:
         st.warning(f"Erro ao gerar os arquivos do Lovable: {e}")
 
+    # ── Prompt pronto para publicar via Claude Code (copie e cole) ──
+    _SIGLAS = {"GINECOLOGIA": "GO", "CLÍNICA MÉDICA": "CM", "CLINICA MEDICA": "CM",
+               "CIRÚRGICA": "CIRURGIA", "CIRURGICA": "CIRURGIA", "CIRURGIA": "CIRURGIA",
+               "PEDIATRIA": "PED", "FAMÍLIA": "MFC", "FAMILIA": "MFC", "MENTAL": "SM"}
+    _sig = next((v for k, v in _SIGLAS.items() if k in (esp or "").upper()), "XX")
+    _cod_sug = f"R1-{_sig}-{turma}" if turma else f"R1-{_sig}-T?"
+    with st.expander("🤖 Publicar no Lovable via Claude Code (prompt pronto)", expanded=True):
+        cpa, cpb = st.columns(2)
+        with cpa:
+            _cod = st.text_input("Código do rodízio", value=_cod_sug, key="_pub_codigo",
+                help="Ex.: R1-GO-T6 (Rodízio 1 · GO · Turma 6). Ajuste o número do rodízio se preciso.")
+        with cpb:
+            _nsg_def = st.session_state.get("config_atual", {}).get("num_sg", 6)
+            _nsg_opts = [4, 6, 8]
+            _nsg = st.selectbox("Subgrupos (opcao_total_sg)", _nsg_opts,
+                index=_nsg_opts.index(_nsg_def) if _nsg_def in _nsg_opts else 1, key="_pub_nsg")
+        _prompt_pub = (
+            f"Publique a escala {_cod} no Lovable usando publicar_lovable.py.\n"
+            f"- Código do rodízio: {_cod}\n"
+            f"- Subgrupos (opcao_total_sg): {_nsg}\n"
+            f"- Especialidade: {esp} | Turma: {turma}\n"
+            f"- Anexei os 3 arquivos do gerador: template_{_slug_lv}.xlsx, "
+            f"importar_lovable_{_slug_lv}.xlsx e o definicoes_*.json.\n"
+            f"Faça dry-run primeiro pra eu conferir, depois publique e valide "
+            f"(CH, plano de blocos, rotação diagonal e área verde)."
+        )
+        st.caption("1) Baixe os 3 arquivos acima.  2) Copie este prompt (botão 📋 no canto).  "
+                   "3) Abra uma conversa NOVA no Claude Code e cole o prompt + anexe os 3 arquivos.")
+        st.code(_prompt_pub, language="text")
+
     # Correção
     st.divider()
     with st.expander("🔁 Solicitar correção à IA"):
@@ -2086,6 +2116,30 @@ pf = st.session_state.get("prefill", {})
 if pf:
     st.info(f"💡 **Importado:** {pf.get('resumo','')}")
 
+# ── Catálogo de especialidades/serviços CADASTRADOS no Lovable (alimenta os seletores) ──
+# Evita digitar serviço/local errado: o nome vem de uma lista, não de texto livre.
+def _carregar_catalogo_lovable():
+    import json as _json, os as _os
+    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "servicos_lovable.json")
+    try:
+        with open(_p, encoding="utf-8") as _f:
+            return _json.load(_f)
+    except Exception:
+        return {"especialidades": [], "servicos_compartilhados": [], "servicos_por_especialidade": {}}
+
+_CAT_LOVABLE = _carregar_catalogo_lovable()
+
+def _servicos_da_especialidade(esp):
+    """Serviços cadastrados da especialidade + os compartilhados (área verde, aulas)."""
+    por = _CAT_LOVABLE.get("servicos_por_especialidade", {})
+    alvo = _sem_acento(esp)
+    nomes = []
+    for k, v in por.items():
+        if _sem_acento(k) == alvo:
+            nomes = list(v)
+            break
+    return nomes + list(_CAT_LOVABLE.get("servicos_compartilhados", []))
+
 st.header("📋 Briefing da Escala")
 st.caption("Preencha com atenção — quanto mais detalhado, mais precisa a escala gerada.")
 
@@ -2093,9 +2147,26 @@ st.caption("Preencha com atenção — quanto mais detalhado, mais precisa a esc
 with st.expander("📌 Bloco 1 — Identificação", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        especialidade = st.text_input("Especialidade *",
-            value=pf.get("especialidade",""),
-            placeholder="ex: Clínica Médica")
+        _esp_cad = _CAT_LOVABLE.get("especialidades", [])
+        _esp_cur = pf.get("especialidade", "")
+        _ESP_OUTRA = "➕ Outra (digitar)…"
+        _esp_opts = list(_esp_cad)
+        if _esp_cur and _esp_cur not in _esp_opts:
+            _esp_opts = [_esp_cur] + _esp_opts
+        if _esp_cad:
+            _esp_opts = _esp_opts + [_ESP_OUTRA]
+            _esp_sel = st.selectbox("Especialidade *", _esp_opts,
+                index=(_esp_opts.index(_esp_cur) if _esp_cur in _esp_opts else 0),
+                help="Escolha da lista cadastrada no Lovable. Se faltar, use 'Outra (digitar)'.")
+            if _esp_sel == _ESP_OUTRA:
+                especialidade = st.text_input("Especialidade (digitar) *", value=_esp_cur, placeholder="ex: Clínica Médica")
+            else:
+                especialidade = _esp_sel
+        else:
+            # catálogo indisponível -> mantém digitação livre (comportamento antigo)
+            especialidade = st.text_input("Especialidade *", value=_esp_cur, placeholder="ex: Clínica Médica")
+        # opções de serviço da especialidade escolhida (usadas no seletor de cada serviço)
+        st.session_state["_serv_opts_cad"] = _servicos_da_especialidade(especialidade)
         anos = ["3º Ano","4º Ano","5º Ano","6º Ano"]
         ano_idx = anos.index(pf.get("ano_curso","4º Ano")) if pf.get("ano_curso") in anos else 1
         ano_curso = st.selectbox("Ano do curso *", anos, index=ano_idx)
@@ -2265,7 +2336,25 @@ with st.expander("📍 Bloco 5 — Blocos de Rodízio", expanded=True):
         with st.expander(f"⚙️ {label}", expanded=expanded):
             ca, cb, cc = st.columns(3)
             with ca:
-                nome = st.text_input("Nome", value=pl_srv.get("nome",""), key=f"{key_prefix}_nome", placeholder="ex: Enfermaria")
+                _serv_cad = st.session_state.get("_serv_opts_cad", [])
+                _nome_cur = pl_srv.get("nome", "")
+                _SERV_OUTRO = "➕ Outro (digitar)…"
+                if _serv_cad:
+                    _nome_opts = list(_serv_cad)
+                    if _nome_cur and _nome_cur not in _nome_opts:
+                        _nome_opts = [_nome_cur] + _nome_opts
+                    _nome_opts = _nome_opts + [_SERV_OUTRO]
+                    _nome_sel = st.selectbox("Nome", _nome_opts,
+                        index=(_nome_opts.index(_nome_cur) if _nome_cur in _nome_opts else 0),
+                        key=f"{key_prefix}_nome_sel",
+                        help="Serviço/local cadastrado no Lovable. Se faltar, use 'Outro (digitar)'.")
+                    if _nome_sel == _SERV_OUTRO:
+                        nome = st.text_input("Nome (digitar)", value=_nome_cur, key=f"{key_prefix}_nome", placeholder="ex: Enfermaria")
+                    else:
+                        nome = _nome_sel
+                else:
+                    # catálogo indisponível -> mantém digitação livre (comportamento antigo)
+                    nome = st.text_input("Nome", value=_nome_cur, key=f"{key_prefix}_nome", placeholder="ex: Enfermaria")
                 abrev = st.text_input("Abreviação", value=pl_srv.get("abrev",""), key=f"{key_prefix}_abrev", placeholder="ex: Enf")
             with cb:
                 obs = st.text_input("Observações", value=pl_srv.get("obs",""), key=f"{key_prefix}_obs")
